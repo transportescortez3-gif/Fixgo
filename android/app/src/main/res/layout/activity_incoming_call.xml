@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pantalla nativa de llamada entrante — diseño idéntico al overlay web:
+  fondo gradiente azul oscuro, avatar circular con inicial, botones circulares.
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_incoming_call"
+    android:fitsSystemWindows="true">
+
+    <!-- Contenido principal centrado verticalmente -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:gravity="center_horizontal">
+
+        <!-- Espaciador superior flexible -->
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <!-- Bloque avatar + texto -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:gravity="center_horizontal"
+            android:layout_gravity="center_horizontal">
+
+            <!-- Contenedor de anillos de pulse + avatar -->
+            <FrameLayout
+                android:layout_width="200dp"
+                android:layout_height="200dp"
+                android:layout_gravity="center_horizontal">
+
+                <!-- Anillo pulse exterior -->
+                <View
+                    android:id="@+id/pulse_outer"
+                    android:layout_width="200dp"
+                    android:layout_height="200dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/circle_pulse_outer" />
+
+                <!-- Anillo pulse interior -->
+                <View
+                    android:id="@+id/pulse_inner"
+                    android:layout_width="172dp"
+                    android:layout_height="172dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/circle_pulse_inner" />
+
+                <!-- Avatar circular con inicial del llamador -->
+                <TextView
+                    android:id="@+id/avatar_letter"
+                    android:layout_width="148dp"
+                    android:layout_height="148dp"
+                    android:layout_gravity="center"
+                    android:background="@drawable/circle_avatar_bg"
+                    android:gravity="center"
+                    android:text="?"
+                    android:textColor="#1A8CF8"
+                    android:textSize="56sp"
+                    android:textStyle="bold" />
+            </FrameLayout>
+
+            <!-- Etiqueta "Llamada entrante" -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="LLAMADA ENTRANTE"
+                android:textColor="#7A8499"
+                android:textSize="12sp"
+                android:letterSpacing="0.18"
+                android:layout_marginTop="28dp"
+                android:layout_marginBottom="10dp" />
+
+            <!-- Nombre del llamador -->
+            <TextView
+                android:id="@+id/caller_name"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text=""
+                android:textColor="#EDF0F5"
+                android:textSize="32sp"
+                android:textStyle="bold"
+                android:gravity="center"
+                android:paddingHorizontal="24dp" />
+
+            <!-- Subtítulo Fixgo Voice -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Fixgo Voice"
+                android:textColor="#1A8CF8"
+                android:textSize="14sp"
+                android:layout_marginTop="8dp" />
+        </LinearLayout>
+
+        <!-- Espaciador inferior flexible (doble de peso → empuja botones abajo) -->
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:layout_weight="2" />
+
+        <!-- Botones de acción -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:paddingBottom="56dp"
+            android:paddingHorizontal="32dp">
+
+            <!-- Rechazar -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center">
+
+                <ImageButton
+                    android:id="@+id/btn_reject"
+                    android:layout_width="76dp"
+                    android:layout_height="76dp"
+                    android:background="@drawable/circle_btn_reject"
+                    android:src="@android:drawable/ic_menu_close_clear_cancel"
+                    android:tint="#FFFFFF"
+                    android:scaleType="center"
+                    android:padding="22dp"
+                    android:contentDescription="Rechazar llamada" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Rechazar"
+                    android:textColor="#7A8499"
+                    android:textSize="13sp"
+                    android:layout_marginTop="10dp" />
+            </LinearLayout>
+
+            <!-- Separador -->
+            <Space
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <!-- Contestar -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center">
+
+                <ImageButton
+                    android:id="@+id/btn_accept"
+                    android:layout_width="76dp"
+                    android:layout_height="76dp"
+                    android:background="@drawable/circle_btn_accept"
+                    android:src="@android:drawable/ic_menu_call"
+                    android:tint="#FFFFFF"
+                    android:scaleType="center"
+                    android:padding="20dp"
+                    android:contentDescription="Contestar llamada" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Contestar"
+                    android:textColor="#7A8499"
+                    android:textSize="13sp"
+                    android:layout_marginTop="10dp" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+</FrameLayout>

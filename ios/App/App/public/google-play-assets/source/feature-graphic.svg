@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="500" viewBox="0 0 1024 500">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07101e"/><stop offset=".58" stop-color="#0d1a35"/><stop offset="1" stop-color="#172c5a"/></linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#79a4ff"/><stop offset="1" stop-color="#3868ff"/></linearGradient>
+    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ff9a3c"/><stop offset="1" stop-color="#ff5f20"/></linearGradient>
+    <filter id="shadow"><feGaussianBlur stdDeviation="18"/></filter>
+  </defs>
+  <rect width="1024" height="500" fill="url(#bg)"/>
+  <circle cx="870" cy="100" r="220" fill="#3971ff" opacity=".18" filter="url(#shadow)"/>
+  <circle cx="100" cy="460" r="180" fill="#ff7d2e" opacity=".12" filter="url(#shadow)"/>
+  <path d="M0 390C180 310 280 470 470 365S770 260 1024 330" fill="none" stroke="#5c82ff" stroke-opacity=".18" stroke-width="2"/>
+  <path d="M0 415C180 335 280 495 470 390S770 285 1024 355" fill="none" stroke="#ff8734" stroke-opacity=".12" stroke-width="2"/>
+  <g transform="translate(58 48)"><image href="file:///home/runner/workspace/public/fixgo-logo.png" width="275" height="90" preserveAspectRatio="xMidYMid meet"/></g>
+  <text x="62" y="212" fill="#ffffff" font-family="DejaVu Sans, sans-serif" font-size="48" font-weight="700">Servicios del hogar</text>
+  <text x="62" y="270" fill="url(#blue)" font-family="DejaVu Sans, sans-serif" font-size="48" font-weight="700">a un toque de distancia.</text>
+  <text x="64" y="322" fill="#b8c4db" font-family="DejaVu Sans, sans-serif" font-size="20">Encuentra expertos. Coordina tu servicio. Resuelve.</text>
+  <g transform="translate(720 78)">
+    <rect width="246" height="336" rx="28" fill="#121c31" stroke="#5274e8" stroke-width="2"/>
+    <rect x="16" y="16" width="214" height="44" rx="12" fill="#1d2b49"/><circle cx="39" cy="38" r="10" fill="url(#orange)"/><text x="60" y="44" fill="#fff" font-family="DejaVu Sans" font-size="14" font-weight="700">Fixgo</text>
+    <rect x="16" y="78" width="214" height="72" rx="16" fill="#1b2942"/><circle cx="48" cy="114" r="20" fill="url(#blue)"/><text x="82" y="110" fill="#fff" font-family="DejaVu Sans" font-size="15" font-weight="700">Reparación</text><text x="82" y="131" fill="#aebbd1" font-family="DejaVu Sans" font-size="12">Encuentra un experto</text>
+    <rect x="16" y="164" width="214" height="72" rx="16" fill="#1b2942"/><circle cx="48" cy="200" r="20" fill="url(#orange)"/><text x="82" y="196" fill="#fff" font-family="DejaVu Sans" font-size="15" font-weight="700">Mantenimiento</text><text x="82" y="217" fill="#aebbd1" font-family="DejaVu Sans" font-size="12">Coordina de forma simple</text>
+    <rect x="16" y="264" width="214" height="48" rx="16" fill="url(#blue)"/><text x="75" y="294" fill="#fff" font-family="DejaVu Sans" font-size="14" font-weight="700">Comenzar</text>
+  </g>
+</svg>

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Fixgo</string>
+    <string name="title_activity_main">Fixgo</string>
+    <string name="package_name">com.fixxer.app</string>
+    <string name="custom_url_scheme">com.fixxer.app</string>
+</resources>

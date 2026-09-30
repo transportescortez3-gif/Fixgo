@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Animación de pulse con retraso para el anillo interior -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:anim/decelerate_interpolator">
+    <scale
+        android:fromXScale="0.85"
+        android:toXScale="1.2"
+        android:fromYScale="0.85"
+        android:toYScale="1.2"
+        android:pivotX="50%"
+        android:pivotY="50%"
+        android:startOffset="400"
+        android:duration="1400"
+        android:repeatMode="restart"
+        android:repeatCount="infinite" />
+    <alpha
+        android:fromAlpha="0.5"
+        android:toAlpha="0.0"
+        android:startOffset="400"
+        android:duration="1400"
+        android:repeatMode="restart"
+        android:repeatCount="infinite" />
+</set>

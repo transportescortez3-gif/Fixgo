@@ -1,0 +1,11 @@
+App/build
+App/Pods
+App/output
+DerivedData
+xcuserdata
+
+# Cordova plugins for Capacitor
+capacitor-cordova-ios-plugins
+
+# The Capacitor config files are committed because the Xcode project references
+# them and a clean clone must open before any sync command runs.

@@ -1,0 +1,182 @@
+package com.capacitorjs.plugins.googlemaps
+
+import com.google.android.gms.maps.GoogleMapOptions
+import com.google.android.gms.maps.model.CameraPosition
+import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.LatLngBounds
+import com.google.android.gms.maps.model.MapColorScheme
+import org.json.JSONObject
+
+class GoogleMapConfig(fromJSONObject: JSONObject) {
+    var width: Int = 0
+    var height: Int = 0
+    var x: Int = 0
+    var y: Int = 0
+    var center: LatLng = LatLng(0.0, 0.0)
+    var googleMapOptions: GoogleMapOptions? = null
+    var zoom: Int = 0
+    var liteMode: Boolean = false
+    var devicePixelRatio: Float = 1.00f
+    var styles: String? = null
+    var mapId: String? = null
+    var minZoom: Int? = null
+    var maxZoom: Int? = null
+    var mapTypeId: String? = null
+    var restriction: GoogleMapConfigRestriction? = null
+    var heading: Double? = null
+
+    init {
+        if (!fromJSONObject.has("width")) {
+            throw InvalidArgumentsError(
+                    "GoogleMapConfig object is missing the required 'width' property"
+            )
+        }
+
+        if (!fromJSONObject.has("height")) {
+            throw InvalidArgumentsError(
+                    "GoogleMapConfig object is missing the required 'height' property"
+            )
+        }
+
+        if (!fromJSONObject.has("x")) {
+            throw InvalidArgumentsError(
+                    "GoogleMapConfig object is missing the required 'x' property"
+            )
+        }
+
+        if (!fromJSONObject.has("y")) {
+            throw InvalidArgumentsError(
+                    "GoogleMapConfig object is missing the required 'y' property"
+            )
+        }
+
+        if (!fromJSONObject.has("zoom")) {
+            throw InvalidArgumentsError(
+                    "GoogleMapConfig object is missing the required 'zoom' property"
+            )
+        }
+
+        if (fromJSONObject.has("devicePixelRatio")) {
+            devicePixelRatio = fromJSONObject.getDouble("devicePixelRatio").toFloat()
+        }
+
+        if (!fromJSONObject.has("center")) {
+            throw InvalidArgumentsError(
+                    "GoogleMapConfig object is missing the required 'center' property"
+            )
+        }
+
+        val centerJSONObject = fromJSONObject.getJSONObject("center")
+
+        if (!centerJSONObject.has("lat") || !centerJSONObject.has("lng")) {
+            throw InvalidArgumentsError(
+                    "LatLng object is missing the required 'lat' and/or 'lng' property"
+            )
+        }
+
+        liteMode =
+                fromJSONObject.has("androidLiteMode") &&
+                        fromJSONObject.getBoolean("androidLiteMode")
+
+        width = fromJSONObject.getInt("width")
+        height = fromJSONObject.getInt("height")
+        x = fromJSONObject.getInt("x")
+        y = fromJSONObject.getInt("y")
+
+        val tempZoom = fromJSONObject.getInt("zoom")
+        var tempMinZoom = fromJSONObject.optInt("minZoom").takeIf { fromJSONObject.has("minZoom") }
+        var tempMaxZoom = fromJSONObject.optInt("maxZoom").takeIf { fromJSONObject.has("maxZoom") }
+
+        if (tempMinZoom != null && tempMaxZoom != null && tempMinZoom > tempMaxZoom) {
+            tempMinZoom = tempMaxZoom.also { tempMaxZoom = tempMinZoom }
+        }
+
+        minZoom = tempMinZoom
+        maxZoom = tempMaxZoom
+
+        zoom = tempZoom.coerceIn(
+            tempMinZoom ?: Int.MIN_VALUE,
+            tempMaxZoom ?: Int.MAX_VALUE
+        )
+
+        mapTypeId = fromJSONObject.optString("mapTypeId").takeIf { fromJSONObject.has("mapTypeId") }
+
+        val lat = centerJSONObject.getDouble("lat")
+        val lng = centerJSONObject.getDouble("lng")
+        center = LatLng(lat, lng)
+
+        val cameraPosition = CameraPosition(center, zoom.toFloat(), 0.0F, 0.0F)
+
+        styles = fromJSONObject.getString("styles")
+
+        mapId = fromJSONObject.getString("androidMapId")
+
+        restriction = fromJSONObject.optJSONObject("restriction")?.let { GoogleMapConfigRestriction(it) }
+
+        heading = fromJSONObject.optDouble("heading").takeIf { fromJSONObject.has("heading") }
+
+        googleMapOptions = GoogleMapOptions().camera(cameraPosition).liteMode(liteMode)
+        if (mapId != null) {
+            googleMapOptions?.mapId(mapId!!)
+        }
+
+        // Custom override (Fixgo): forzar el color scheme del mapa.
+        // Acepta "DARK", "LIGHT" o "FOLLOW_SYSTEM" en androidMapColorScheme.
+        // Requiere play-services-maps 19.0.0+.
+        if (fromJSONObject.has("androidMapColorScheme")) {
+            val schemeStr = fromJSONObject.optString("androidMapColorScheme", "").uppercase()
+            val schemeInt = when (schemeStr) {
+                "DARK" -> MapColorScheme.DARK
+                "LIGHT" -> MapColorScheme.LIGHT
+                "FOLLOW_SYSTEM" -> MapColorScheme.FOLLOW_SYSTEM
+                else -> -1
+            }
+            if (schemeInt != -1) {
+                googleMapOptions?.mapColorScheme(schemeInt)
+            }
+        }
+    }
+}
+
+class GoogleMapConfigRestriction(fromJSONObject: JSONObject) {
+    var latLngBounds: LatLngBounds
+
+    init {
+        if (!fromJSONObject.has("latLngBounds")) {
+            throw InvalidArgumentsError(
+                "GoogleMapConfigRestriction object is missing the required 'latLngBounds' property"
+            )
+        }
+        val latLngBoundsObj = fromJSONObject.getJSONObject("latLngBounds")
+
+        if (!latLngBoundsObj.has("north")) {
+            throw InvalidArgumentsError(
+                "GoogleMapConfigRestriction object is missing the required 'latLngBounds.north' property"
+            )
+        }
+        if (!latLngBoundsObj.has("south")) {
+            throw InvalidArgumentsError(
+                "GoogleMapConfigRestriction object is missing the required 'latLngBounds.south' property"
+            )
+        }
+        if (!latLngBoundsObj.has("east")) {
+            throw InvalidArgumentsError(
+                "GoogleMapConfigRestriction object is missing the required 'latLngBounds.east' property"
+            )
+        }
+        if (!latLngBoundsObj.has("west")) {
+            throw InvalidArgumentsError(
+                "GoogleMapConfigRestriction object is missing the required 'latLngBounds.west' property"
+            )
+        }
+        val north = latLngBoundsObj.getDouble("north")
+        val south = latLngBoundsObj.getDouble("south")
+        val east = latLngBoundsObj.getDouble("east")
+        val west = latLngBoundsObj.getDouble("west")
+
+        latLngBounds = LatLngBounds(
+            LatLng(south, west),
+            LatLng(north, east)
+        )
+    }
+}

@@ -1,0 +1,1 @@
+import{b3 as e}from"./index-BOQDFFM0.js";import"./react-vendor-DPsuY2Bf.js";import"./query-vendor-D3QgdFFn.js";import"./ui-vendor-104CTw8q.js";import"./socket-vendor-B1V2wiQG.js";import"./firebase-vendor-DvpHeU1-.js";class m extends e{async canOpenUrl(r){return{value:!0}}async openUrl(r){return window.open(r.url,"_blank"),{completed:!0}}}export{m as AppLauncherWeb};
