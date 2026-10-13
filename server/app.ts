@@ -5,6 +5,7 @@ import pinoHttp from "pino-http";
 import rateLimit from "express-rate-limit";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { PersistentUploadStorageUnavailableError } from "./lib/objectStorage";
 
 const app: Express = express();
 
@@ -110,6 +111,17 @@ app.use("/api", (_req, res): void => {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction): void => {
   const error = err instanceof Error ? err : new Error(String(err));
+
+  if (error instanceof PersistentUploadStorageUnavailableError) {
+    (req as Request & { log?: { warn: (...args: unknown[]) => void } }).log?.warn(
+      { err: error },
+      "Persistent upload storage is unavailable",
+    );
+    if (!res.headersSent) {
+      res.status(503).json({ error: error.message, code: "PERSISTENT_STORAGE_UNAVAILABLE" });
+    }
+    return;
+  }
 
   // req.log existe gracias a pino-http
   (req as Request & { log?: { error: (...args: unknown[]) => void } }).log?.error(

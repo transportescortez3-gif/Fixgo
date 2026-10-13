@@ -139,7 +139,17 @@ export default function ServiceAlertModal() {
         const existingIdx = prev.findIndex(a => a.serviceId === payload.serviceId);
         if (existingIdx >= 0) {
           const existing = prev[existingIdx];
-          if (payload.deliveryId && existing.deliveryId === payload.deliveryId) return prev;
+          if (payload.deliveryId && existing.deliveryId === payload.deliveryId) {
+            if (existing.budgetNote === payload.budgetNote) return prev;
+            const updated = [...prev];
+            updated[existingIdx] = {
+              ...existing,
+              ...payload,
+              totalSeconds: existing.totalSeconds,
+              expiresAt: existing.expiresAt,
+            };
+            return updated;
+          }
           if (payload.deliveryId && existing.deliveryId !== payload.deliveryId) {
             _moduleHandledIds.delete(payload.serviceId);
             const updated = [...prev];
@@ -163,6 +173,8 @@ export default function ServiceAlertModal() {
     socket.on("service:active_alert", handleActiveAlert);
     socket.on("service:alert_expired", ({ serviceId }: { serviceId: number }) => removeFromQueue(serviceId));
     socket.on("service:taken", ({ serviceId }: { serviceId: number }) => removeFromQueue(serviceId));
+    // Re-fetch an alert that arrived before authentication finished mounting this modal.
+    socket.emit("service:replay_active_alerts");
 
     return () => {
       socket.off("service:active_alert", handleActiveAlert);

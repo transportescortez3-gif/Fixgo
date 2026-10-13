@@ -75,6 +75,11 @@ export default function Login() {
           "No pudimos restaurar tu cifrado con esta contraseña. Si cambiaste tu contraseña, tus chats anteriores podrían seguir apareciendo cifrados.",
           { duration: 12000 },
         );
+      } else if (keySync === "unknown") {
+        toast.warning(
+          "No pudimos comprobar tu respaldo de cifrado. No se cambió tu llave; revisa tu conexión e inténtalo de nuevo antes de enviar mensajes.",
+          { duration: 12000 },
+        );
       }
       setLocation("/");
     } catch (error: any) {

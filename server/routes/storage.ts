@@ -5,7 +5,11 @@ import {
   RequestUploadUrlBody,
   RequestUploadUrlResponse,
 } from "../zod";
-import { ObjectStorageService, ObjectNotFoundError } from "../lib/objectStorage";
+import {
+  ObjectStorageService,
+  ObjectNotFoundError,
+  PersistentUploadStorageUnavailableError,
+} from "../lib/objectStorage";
 import { authenticate } from "../middlewares/authenticate";
 import type { AuthRequest } from "../middlewares/authenticate";
 import { logger } from "../lib/logger";
@@ -50,6 +54,11 @@ router.post("/storage/uploads/request-url", authenticate, async (req: AuthReques
       }),
     );
   } catch (error) {
+    if (error instanceof PersistentUploadStorageUnavailableError) {
+      req.log.warn({ err: error }, "Persistent upload storage is unavailable");
+      res.status(503).json({ error: error.message, code: "PERSISTENT_STORAGE_UNAVAILABLE" });
+      return;
+    }
     req.log.error({ err: error }, "Error generating upload URL");
     res.status(500).json({ error: "Failed to generate upload URL" });
   }
@@ -78,6 +87,11 @@ router.put(
       await objectStorageService.saveUploadedFile(id, data, contentType);
       res.status(200).json({ success: true });
     } catch (error) {
+      if (error instanceof PersistentUploadStorageUnavailableError) {
+        logger.warn({ err: error }, "Persistent upload storage is unavailable");
+        res.status(503).json({ error: error.message, code: "PERSISTENT_STORAGE_UNAVAILABLE" });
+        return;
+      }
       logger.error({ err: error }, "Error saving uploaded file");
       res.status(500).json({ error: "Failed to save file" });
     }
@@ -118,6 +132,11 @@ router.get("/storage/objects/*path", async (req: Request, res: Response) => {
       res.end();
     }
   } catch (error) {
+    if (error instanceof PersistentUploadStorageUnavailableError) {
+      logger.warn({ err: error }, "Persistent upload storage is unavailable");
+      res.status(503).json({ error: error.message, code: "PERSISTENT_STORAGE_UNAVAILABLE" });
+      return;
+    }
     if (error instanceof ObjectNotFoundError) {
       res.status(404).json({ error: "Object not found" });
       return;

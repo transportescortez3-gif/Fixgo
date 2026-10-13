@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect, useCallback } from "react";
+import { flushSync } from "react-dom";
 import { Capacitor } from "@capacitor/core";
 import { uploadFileToStorage } from "@/lib/storage";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -328,12 +329,12 @@ export function SelfieCaptureModal({ open, onClose, onCapture, title, descriptio
           onCamera={() => {
             // CRÍTICO: invocar startCamera dentro del mismo gesto del usuario
             // (iOS Safari rechaza getUserMedia si se llama desde un useEffect/setTimeout)
-            setSheetOpen(false);
+            flushSync(() => setSheetOpen(false));
             setSourceChosen(true);
             startCamera();
           }}
           onGallery={() => {
-            setSheetOpen(false);
+            flushSync(() => setSheetOpen(false));
             setSourceChosen(true);
             openBrowserGallery(handleGalleryFile);
           }}

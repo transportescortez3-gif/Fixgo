@@ -39,15 +39,12 @@ router.get("/users", authenticate, requireRole("admin"), async (req, res): Promi
       id: usersTable.id,
       name: usersTable.name,
       email: usersTable.email,
-      rut: sql<string | null>`COALESCE(
-        (
-          SELECT ${kycDocumentsTable.rut}
-          FROM ${kycDocumentsTable}
-          WHERE ${kycDocumentsTable.userId} = ${usersTable.id}
-          ORDER BY ${kycDocumentsTable.createdAt} DESC
-          LIMIT 1
-        ),
-        ${usersTable.payoutBankRut}
+      rut: sql<string | null>`(
+        SELECT ${kycDocumentsTable.rut}
+        FROM ${kycDocumentsTable}
+        WHERE ${kycDocumentsTable.userId} = ${usersTable.id}
+        ORDER BY ${kycDocumentsTable.createdAt} DESC
+        LIMIT 1
       )`,
       role: usersTable.role,
       status: usersTable.status,

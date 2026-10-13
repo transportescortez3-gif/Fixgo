@@ -160,7 +160,6 @@ export default function Profile() {
   const canSelectAllCategories = subscriptionActive && isProPlus;
   const updateMutation = useUpdateUser();
   const availabilityMutation = useUpdateWorkerAvailability();
-  const initialized = useRef(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [uploadingVideo, setUploadingVideo] = useState(false);
   const videoInputRef = useRef<HTMLInputElement>(null);
@@ -292,12 +291,29 @@ export default function Profile() {
     }
   }, [isWorker, user?.id, fetchPortfolio, fetchCertifications]);
 
-  const { register, handleSubmit, reset, watch, formState: { errors, isDirty } } = useForm<ProfileForm>({
+  const { register, handleSubmit, reset, watch, formState: { errors, isDirty, dirtyFields } } = useForm<ProfileForm>({
     resolver: zodResolver(profileSchema),
   });
+  const dirtyFieldCount = Object.keys(dirtyFields).length;
+  const visitFeeInput = watch("visitFee") ?? "";
+  const visitFeeInputAmount = Number.parseInt(visitFeeInput.replace(/\D/g, ""), 10);
+  const visitFeeInputComplete = Number.isFinite(visitFeeInputAmount) && visitFeeInputAmount > 0;
+  const payoutFormComplete = [
+    watch("payoutBankName"),
+    watch("payoutBankAccountType"),
+    watch("payoutBankAccountNumber"),
+    watch("payoutBankRut"),
+  ].every((value) => typeof value === "string" && value.trim().length > 0);
+  const savedVisitFeeComplete = Number((user as any)?.visitFee) > 0;
+  const savedPayoutComplete = [
+    (user as any)?.payoutBankName,
+    (user as any)?.payoutBankAccountType,
+    (user as any)?.payoutBankAccountNumber,
+    (user as any)?.payoutBankRut,
+  ].every((value) => typeof value === "string" && value.trim().length > 0);
 
   useEffect(() => {
-    if (user && !initialized.current) {
+    if (user) {
       reset({
         name: user.name,
         bio: user.bio,
@@ -308,12 +324,11 @@ export default function Profile() {
         payoutBankAccountNumber: (user as any).payoutBankAccountNumber ?? "",
         payoutBankRut: (user as any).payoutBankRut ?? "",
         payoutDataConsent: (user as any).payoutDataConsent ?? false,
-      });
+      }, { keepDirtyValues: true });
       const r = (user as any).serviceRadius;
       if (r) setServiceRadius(Math.min(50, Math.max(1, r)));
       const ar = (user as any).alertRadiusKm;
       setAlertRadiusKm(ar != null ? ar : null);
-      initialized.current = true;
     }
   }, [user, reset]);
 
@@ -362,6 +377,7 @@ export default function Profile() {
           payoutDataConsent: !!data.payoutDataConsent,
         } as any,
       });
+      reset(data);
       toast.success("Perfil actualizado exitosamente");
       queryClient.invalidateQueries({ queryKey: getGetMeQueryKey() });
     } catch (e: any) {
@@ -804,7 +820,20 @@ export default function Profile() {
                   <div className="space-y-1.5">
                     <Label htmlFor="visitFee" className="flex items-center justify-between gap-1.5">
                       Tarifa de visita técnica
-                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#f5a83c]/15 text-[#f5a83c]" title="Requerida para recibir trabajos">Requerido</span>
+                      <span
+                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                          visitFeeInputComplete && savedVisitFeeComplete
+                            ? "bg-green-500/15 text-green-500"
+                            : "bg-[#f5a83c]/15 text-[#f5a83c]"
+                        }`}
+                        title={visitFeeInputComplete && savedVisitFeeComplete
+                          ? "Guardada; requerida para recibir trabajos"
+                          : visitFeeInputComplete
+                            ? "Completa en el formulario, pero aún no está guardada"
+                            : "Requerida para recibir trabajos"}
+                      >
+                        {visitFeeInputComplete ? (savedVisitFeeComplete ? "Completo" : "Guardar") : "Requerido"}
+                      </span>
                     </Label>
                     <div className="relative">
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground font-medium">$</span>
@@ -830,7 +859,20 @@ export default function Profile() {
                     <div>
                       <Label className="flex items-center justify-between gap-1.5">
                         <span className="text-[11px] font-semibold">Para que te paguen el trabajo y la visita técnica.</span>
-                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#f5a83c]/15 text-[#f5a83c]" title="Requeridos para recibir trabajos">Requerido</span>
+                        <span
+                          className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                            payoutFormComplete && savedPayoutComplete
+                              ? "bg-green-500/15 text-green-500"
+                              : "bg-[#f5a83c]/15 text-[#f5a83c]"
+                          }`}
+                          title={payoutFormComplete && savedPayoutComplete
+                            ? "Guardados; requeridos para recibir trabajos"
+                            : payoutFormComplete
+                              ? "Completos en el formulario, pero aún no están guardados"
+                              : "Requeridos para recibir trabajos"}
+                        >
+                          {payoutFormComplete ? (savedPayoutComplete ? "Completo" : "Guardar") : "Requerido"}
+                        </span>
                       </Label>
                       <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
                         El cliente los ve solo cuando corresponde pagar. Fix Master no procesa el pago.
@@ -884,6 +926,12 @@ export default function Profile() {
                       />
                       <span>Acepto que mis datos de transferencia se muestren al cliente o experto correspondiente cuando el sistema lo determine necesario.</span>
                     </label>
+                    {(visitFeeInputComplete && !savedVisitFeeComplete) ||
+                    (payoutFormComplete && !savedPayoutComplete) ? (
+                      <p className="text-[11px] text-[#f5a83c]">
+                        Los datos están completos en este formulario, pero debes guardar el perfil para que se apliquen al recibir trabajos.
+                      </p>
+                    ) : null}
                   </div>
                 )}
 
@@ -932,7 +980,7 @@ export default function Profile() {
                 )}
               </CardContent>
               <CardFooter className="min-w-0 border-t px-4 py-4 flex justify-end sm:px-6">
-                <Button type="submit" className="w-full md:w-auto fixgo-gradient font-bold text-white" disabled={!isDirty || updateMutation.isPending}>
+                <Button type="submit" className="w-full md:w-auto fixgo-gradient font-bold text-white" disabled={(!isDirty && dirtyFieldCount === 0) || updateMutation.isPending}>
                   {updateMutation.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                   Guardar Cambios
                 </Button>

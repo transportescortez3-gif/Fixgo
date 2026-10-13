@@ -23,7 +23,6 @@ export function PhotoSourceSheet({ open, onClose, onCamera, onGallery }: PhotoSo
         <div className="grid grid-cols-2 gap-3">
           <button
             onClick={() => {
-              onClose();
               onCamera();
             }}
             className="flex flex-col items-center gap-3 py-6 px-4 bg-muted/50 hover:bg-muted rounded-2xl transition-colors border border-border/50 active:scale-95"
@@ -36,7 +35,6 @@ export function PhotoSourceSheet({ open, onClose, onCamera, onGallery }: PhotoSo
 
           <button
             onClick={() => {
-              onClose();
               onGallery();
             }}
             className="flex flex-col items-center gap-3 py-6 px-4 bg-muted/50 hover:bg-muted rounded-2xl transition-colors border border-border/50 active:scale-95"

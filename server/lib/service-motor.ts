@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { db, servicesTable, usersTable, alertSessionsTable, workerAlertSlotsTable, proposalsTable, workerCategoriesTable, messagesTable, subscriptionPlansTable } from "../db";
 import { userSubscriptionsTable } from "../db/schema/subscriptions";
-import { eq, and, isNull, or, lt, gt, lte, asc, inArray, sql } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, or, lt, gt, lte, asc, inArray, sql } from "drizzle-orm";
 import { emitToWorkers, emitToUser, emitToService } from "./socketio";
 import { createNotification } from "./createNotification";
 import { logger } from "./logger";
+import { MAX_ACTIVE_WORKERS_PER_PHASE, splitAlertRecipients } from "./alert-recipient-selection";
 import { isWorkerPayoutComplete } from "./worker-eligibility";
 import { finalizeCompletionSideEffects } from "./complete-service";
 
@@ -23,7 +24,6 @@ import { finalizeCompletionSideEffects } from "./complete-service";
 //   Mecanismo: emite service:available → aparece en la lista inferior del worker.
 // ─────────────────────────────────────────────────────────────────────────────
 const ACTIVE_TIMEOUT_MS = 60_000;     // 60 s para la fase activa (Pro Max + cercanos)
-const MAX_ACTIVE_WORKERS = 8;         // Máximo de alertas activas simultáneas
 const NEARBY_DELAY_MS = 13_000;       // Ventaja Pro Max: cercanos reciben la alerta 13s después
 const ARRIVAL_AUTO_START_DELAY_MS = 10 * 60_000;
 
@@ -114,6 +114,9 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
       title: servicesTable.title,
       clientId: servicesTable.clientId,
       budgetNote: servicesTable.budgetNote,
+      status: servicesTable.status,
+      isDirectRequest: servicesTable.isDirectRequest,
+      directWorkerId: servicesTable.directWorkerId,
     })
       .from(alertSessionsTable)
       .innerJoin(servicesTable, eq(servicesTable.id, alertSessionsTable.serviceId))
@@ -233,6 +236,58 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
   }, Math.max(0, dispatch.expiresAt.getTime() - Date.now()));
   alertTimers.set(key, timer);
   return true;
+}
+
+/** Refresh the live Pro Max popup when the client edits the service budget. */
+export async function refreshProMaxBudgetAlerts(serviceId: number): Promise<void> {
+  const now = new Date();
+  const activeAlerts = await db.select({
+    workerId: alertSessionsTable.workerId,
+    deliveryId: alertSessionsTable.deliveryId,
+    distanceKm: alertSessionsTable.distanceKm,
+    expiresAt: alertSessionsTable.expiresAt,
+    title: servicesTable.title,
+    clientId: servicesTable.clientId,
+    budgetNote: servicesTable.budgetNote,
+  })
+    .from(alertSessionsTable)
+    .innerJoin(servicesTable, eq(servicesTable.id, alertSessionsTable.serviceId))
+    .innerJoin(workerAlertSlotsTable, and(
+      eq(workerAlertSlotsTable.workerId, alertSessionsTable.workerId),
+      eq(workerAlertSlotsTable.serviceId, alertSessionsTable.serviceId),
+      eq(workerAlertSlotsTable.deliveryId, alertSessionsTable.deliveryId),
+      eq(workerAlertSlotsTable.state, "pending"),
+    ))
+    .where(and(
+      eq(alertSessionsTable.serviceId, serviceId),
+      eq(alertSessionsTable.phase, "promax"),
+      eq(alertSessionsTable.response, "pending"),
+      isNotNull(alertSessionsTable.deliveryId),
+      gt(alertSessionsTable.expiresAt, now),
+      or(
+        eq(servicesTable.status, "alerting"),
+        and(
+          eq(servicesTable.status, "pending"),
+          eq(servicesTable.isDirectRequest, true),
+          eq(servicesTable.directWorkerId, alertSessionsTable.workerId),
+        ),
+      ),
+    ));
+
+  for (const alert of activeAlerts) {
+    const client = await getClientInfo(alert.clientId);
+    emitToUser(alert.workerId, "service:active_alert", {
+      serviceId,
+      deliveryId: alert.deliveryId,
+      title: alert.title,
+      clientName: client?.name ?? "Cliente",
+      convivenciaScore: client?.clientRating ?? null,
+      distanceKm: alert.distanceKm == null ? null : Math.round(alert.distanceKm * 10) / 10,
+      phase: "promax",
+      totalSeconds: Math.max(1, Math.ceil((alert.expiresAt.getTime() - Date.now()) / 1000)),
+      budgetNote: alert.budgetNote ?? null,
+    });
+  }
 }
 
 export async function releaseWorkerAlertSlot(workerId: number, serviceId: number): Promise<boolean> {
@@ -576,7 +631,7 @@ async function launchCombinedActivePhase(
   //  - Con coordenadas:
   //    · Pro Max → dentro de alertRadiusKm (o ilimitado si no tiene radio)
   //    · No Pro Max → dentro de NEARBY_RADIUS_KM
-  const qualified = allEligible
+  const rankedCandidates = allEligible
     .map(w => {
       const distKm =
         hasCoords && w.lat && w.lng
@@ -604,8 +659,13 @@ async function launchCombinedActivePhase(
       const da = a.distKm ?? 9999;
       const db2 = b.distKm ?? 9999;
       return da - db2;
-    })
-    .slice(0, MAX_ACTIVE_WORKERS);
+    });
+
+  const { proMaxWorkers, nearbyWorkers } = splitAlertRecipients(
+    rankedCandidates,
+    MAX_ACTIVE_WORKERS_PER_PHASE,
+  );
+  const qualified = [...proMaxWorkers, ...nearbyWorkers];
 
   logger.info({
     serviceId,
@@ -662,9 +722,6 @@ async function launchCombinedActivePhase(
         eq(alertSessionsTable.response, "skipped"),
       ));
   }));
-
-  const proMaxWorkers = qualified.filter(w => w.isProMax);
-  const nearbyWorkers = qualified.filter(w => !w.isProMax);
 
   // La fila de sesión ya está persistida; la reserva única decide quién recibe
   // la alerta ahora y quién queda en cola hasta liberar su negociación actual.

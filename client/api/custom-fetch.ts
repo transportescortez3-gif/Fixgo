@@ -373,7 +373,21 @@ export async function customFetch<T = unknown>(
 
   const requestInfo = { method, url: resolveUrl(input) };
 
+  const requestToken = headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1] ?? null;
   const response = await fetch(input, { ...init, method, headers });
+
+  // A stale token can leave the app showing a cached account while every
+  // protected request is rejected. Only expire the current session when the
+  // rejected request used the token that is still stored (ignore late replies
+  // from an older session after a new login).
+  if (
+    response.status === 401 &&
+    requestToken &&
+    requestToken === getAuthToken() &&
+    typeof window !== "undefined"
+  ) {
+    window.dispatchEvent(new Event("fixgo:auth-expired"));
+  }
 
   if (!response.ok) {
     const errorData = await parseErrorBody(response, method);

@@ -1,7 +1,9 @@
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
+import { flushSync } from "react-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
-import { useGetKycStatus, useSubmitKyc } from "@/api";
+import { getGetMeQueryKey, useGetKycStatus, useSubmitKyc } from "@/api";
 import { uploadFileToStorage } from "@/lib/storage";
 import { openBrowserCamera, openBrowserGallery } from "@/components/photo-picker";
 import { PhotoSourceSheet } from "@/components/photo-source-sheet";
@@ -67,7 +69,8 @@ function FileUploadBox({
       cooldownRef.current = true;
       setTimeout(() => { cooldownRef.current = false; }, 800);
     } catch (err) {
-      toast.error("Error al subir la imagen");
+      console.error("KYC image upload failed", err);
+      toast.error(err instanceof Error && err.message ? err.message : "Error al subir la imagen");
     } finally {
       setLocalUploading(false);
     }
@@ -133,8 +136,8 @@ function FileUploadBox({
       <PhotoSourceSheet
         open={sheetOpen}
         onClose={() => setSheetOpen(false)}
-        onCamera={() => openBrowserCamera(captureMode, handleFile)}
-        onGallery={() => openBrowserGallery(handleFile)}
+        onCamera={() => { flushSync(() => setSheetOpen(false)); openBrowserCamera(captureMode, handleFile); }}
+        onGallery={() => { flushSync(() => setSheetOpen(false)); openBrowserGallery(handleFile); }}
       />
     </>
   );
@@ -142,6 +145,7 @@ function FileUploadBox({
 
 export default function KycPage() {
   const { user, isFletes } = useAuth();
+  const queryClient = useQueryClient();
   const { data: kycStatus, isLoading, refetch } = useGetKycStatus();
   const submitKyc = useSubmitKyc();
 
@@ -157,6 +161,13 @@ export default function KycPage() {
   const docLabel = documentType === "cedula" ? "Cédula de Identidad" : "Licencia de Conducir";
   const docLabelShort = documentType === "cedula" ? "Cédula" : "Licencia";
   const docIcon = documentType === "cedula" ? CreditCard : Car;
+  const status = (kycStatus as any)?.status || "not_submitted";
+
+  useEffect(() => {
+    if (status === "approved") {
+      void queryClient.invalidateQueries({ queryKey: getGetMeQueryKey() });
+    }
+  }, [queryClient, status]);
 
   if (isLoading) {
     return (
@@ -165,8 +176,6 @@ export default function KycPage() {
       </div>
     );
   }
-
-  const status = (kycStatus as any)?.status || "not_submitted";
 
   if (status === "approved") {
     return (

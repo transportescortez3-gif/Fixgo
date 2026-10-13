@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { flushSync } from "react-dom";
 import { Capacitor } from "@capacitor/core";
 import { PhotoSourceSheet } from "@/components/photo-source-sheet";
 
@@ -91,7 +92,7 @@ export default function PhotoPicker({ onFile, capture = "environment", children 
         open={sheetOpen}
         onClose={() => setSheetOpen(false)}
         onCamera={() => {
-          setSheetOpen(false);
+          flushSync(() => setSheetOpen(false));
           if (Capacitor.isNativePlatform()) {
             openNativeCamera(capture, onFile).catch(console.error);
           } else {
@@ -99,7 +100,7 @@ export default function PhotoPicker({ onFile, capture = "environment", children 
           }
         }}
         onGallery={() => {
-          setSheetOpen(false);
+          flushSync(() => setSheetOpen(false));
           if (Capacitor.isNativePlatform()) {
             openNativeGallery(onFile).catch(console.error);
           } else {

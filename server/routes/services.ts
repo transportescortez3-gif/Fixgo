@@ -12,6 +12,7 @@ import {
   handleServiceTaken,
   handleServiceTerminal,
   queueDirectServiceAlert,
+  refreshProMaxBudgetAlerts,
 } from "../lib/service-motor";
 import { alias } from "drizzle-orm/pg-core";
 import { logger } from "../lib/logger";
@@ -377,6 +378,12 @@ router.patch("/services/:id", authenticate, async (req: AuthRequest, res): Promi
     return;
   }
 
+  if (parsed.data.budgetNote !== undefined) {
+    await refreshProMaxBudgetAlerts(updated.id).catch((error) => {
+      logger.warn({ err: error, serviceId: updated.id }, "Could not refresh active Pro Max budget alert");
+    });
+  }
+
   const full = await getServiceWithRelations(updated.id);
   res.json(full);
 });
@@ -437,6 +444,9 @@ router.post("/services/:id/clear-budget", authenticate, async (req: AuthRequest,
   }
 
   await db.update(servicesTable).set({ budgetNote: null }).where(eq(servicesTable.id, id));
+  await refreshProMaxBudgetAlerts(id).catch((error) => {
+    logger.warn({ err: error, serviceId: id }, "Could not refresh active Pro Max budget alert after clearing budget");
+  });
   res.json({ ok: true });
 });
 

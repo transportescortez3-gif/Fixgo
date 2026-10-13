@@ -61,18 +61,39 @@ router.post("/kyc/submit", authenticate, async (req: AuthRequest, res): Promise<
 });
 
 router.get("/kyc/status", authenticate, async (req: AuthRequest, res): Promise<void> => {
+  const [user] = await db.select({ kycStatus: usersTable.kycStatus })
+    .from(usersTable)
+    .where(eq(usersTable.id, req.userId!))
+    .limit(1);
   const [kycDoc] = await db.select()
     .from(kycDocumentsTable)
     .where(eq(kycDocumentsTable.userId, req.userId!))
     .orderBy(desc(kycDocumentsTable.createdAt))
     .limit(1);
+  // Las reglas de acceso a trabajos leen users.kyc_status. Devuelve el mismo
+  // estado aquí para que la pantalla web no contradiga al perfil/la app nativa.
+  let status = user?.kycStatus ?? kycDoc?.status ?? "not_submitted";
+  // Older approval paths could update the KYC document without updating the
+  // user row. Keep the canonical account status aligned with an approved record
+  // so web onboarding and worker eligibility do not contradict the KYC screen.
+  if (kycDoc?.status === "approved" && user?.kycStatus !== "approved") {
+    await db.update(usersTable)
+      .set({ kycStatus: "approved" })
+      .where(eq(usersTable.id, req.userId!));
+    invalidateUserCache(req.userId!);
+    status = "approved";
+  }
 
   if (!kycDoc) {
-    res.json({ id: 0, userId: req.userId!, rut: "", fullName: "", cedulaFrontPath: "", cedulaBackPath: "", selfiePath: "", status: "not_submitted", rejectionReason: null, reviewedBy: null, reviewedAt: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    res.json({ id: 0, userId: req.userId!, rut: "", fullName: "", cedulaFrontPath: "", cedulaBackPath: "", selfiePath: "", status, rejectionReason: null, reviewedBy: null, reviewedAt: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
     return;
   }
 
-  res.json(kycDoc);
+  res.json({
+    ...kycDoc,
+    status,
+    rejectionReason: status === "rejected" ? kycDoc.rejectionReason : null,
+  });
 });
 
 router.get("/admin/kyc", authenticate, requireRole("admin"), async (req, res): Promise<void> => {

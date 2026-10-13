@@ -616,6 +616,13 @@ export async function initSocketIO(httpServer: HTTPServer): Promise<SocketServer
       }
     });
 
+    socket.on("service:replay_active_alerts", () => {
+      if (!uid) return;
+      import("./service-motor")
+        .then(({ reemitActiveAlertsForWorker }) => reemitActiveAlertsForWorker(uid))
+        .catch((err) => console.error("Failed to replay active service alerts:", err));
+    });
+
     socket.on("leave_user", (userId: number) => {
       if (socket.data.userId === userId) {
         socket.leave(`user_${userId}`);

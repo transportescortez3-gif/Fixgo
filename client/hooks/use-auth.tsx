@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, ReactNode, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, ReactNode, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { User, AuthResponse } from "@/api";
 import { useGetMe, getGetMeQueryKey } from "@/api";
@@ -141,6 +141,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     queryClient.clear();
     reconnectSocket();
   };
+
+  const logoutRef = useRef(logout);
+  logoutRef.current = logout;
+
+  useEffect(() => {
+    const handleExpiredSession = () => logoutRef.current();
+    window.addEventListener("fixgo:auth-expired", handleExpiredSession);
+    return () => window.removeEventListener("fixgo:auth-expired", handleExpiredSession);
+  }, []);
 
   const switchRole = useCallback(async (targetRole: string) => {
     const currentToken = getAuthToken();
