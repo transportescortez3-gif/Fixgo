@@ -18,6 +18,7 @@ import { toast } from "sonner";
 import { Loader2, CalendarIcon, MapPin, X, ImagePlus, Zap, Home, Building2, Store, Lock, AlertTriangle, ShieldCheck, Crown, Star } from "lucide-react";
 import { SelfieCaptureModal } from "@/components/selfie-capture-modal";
 import { getCategoryStyle } from "@/lib/category-icons";
+import { findServiceRequestSubcategory, getServiceRequestPrefill } from "@/lib/service-selection";
 import { useSubscription } from "@/hooks/use-subscription";
 import { Link } from "wouter";
 
@@ -44,8 +45,7 @@ export default function NewService() {
   } = useSubscription();
 
   const params = new URLSearchParams(search);
-  const urlCategoryId = params.get("categoryId") ? parseInt(params.get("categoryId")!) : undefined;
-  const urlSubcategoryId = params.get("subcategoryId") ? parseInt(params.get("subcategoryId")!) : undefined;
+  const { categoryId: urlCategoryId, subcategoryId: urlSubcategoryId } = getServiceRequestPrefill(search);
   const urlDirectWorkerId = params.get("directWorkerId") ? parseInt(params.get("directWorkerId")!) : undefined;
   const urlWorkerName = params.get("workerName") ?? undefined;
 
@@ -97,17 +97,17 @@ export default function NewService() {
     ? "Describe qué necesitas mover: tipo de objetos, cantidad, peso aproximado, y si necesitas ayuda para cargar o descargar."
     : "Describe el problema, dimensiones, materiales u otros detalles relevantes...";
 
-  const subcategoryData = urlSubcategoryId && categories
-    ? categories
-        .flatMap((c: any) => c.subcategories ?? [])
-        .find((s: any) => s.id === urlSubcategoryId) ?? null
-    : null;
+  const subcategoryData = findServiceRequestSubcategory(categories, urlCategoryId, urlSubcategoryId);
 
   useEffect(() => {
     if (urlCategoryId && categories && categories.length > 0) {
       setValue("categoryId", urlCategoryId);
     }
   }, [categories, urlCategoryId, setValue]);
+
+  useEffect(() => {
+    setSelectedSubcategoryId(urlSubcategoryId);
+  }, [urlSubcategoryId]);
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);

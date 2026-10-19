@@ -271,12 +271,12 @@ function ClientServiceCard({ service, onModalOpen, onModalClose, autoOpenChat, o
       </div>
 
       {service.workStartedAt && (
-        <div role="status" className="mx-4 mb-3 rounded-xl border border-emerald-400/50 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-200">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4 shrink-0" />
+        <div role="status" aria-live="polite" className="mx-4 mb-3 rounded-2xl border-2 border-emerald-400/70 bg-emerald-500/15 px-4 py-4 text-base font-bold text-emerald-100 shadow-lg shadow-emerald-500/10">
+          <div className="flex items-center gap-2 text-lg">
+            <CheckCircle2 className="h-5 w-5 shrink-0" />
             <span>Trabajo iniciado a las {format(new Date(service.workStartedAt), "HH:mm")}</span>
           </div>
-          <p className="mt-1 text-xs font-normal">Para finalizar el trabajo, dirígete al perfil de Mis Trabajos.</p>
+          <p className="mt-2 text-sm font-semibold">Para finalizar tu trabajo, ve a Mis Trabajos y marca como completado.</p>
         </div>
       )}
       {service.workerArrivedAt && !service.workStartedAt && (
@@ -876,12 +876,12 @@ function WorkerJobCard({ proposal, autoRate, autoOpenChat, onAutoOpenHandled, on
       </div>
 
       {svc.workStartedAt && (
-        <div role="status" className="mx-4 mb-3 rounded-xl border border-emerald-400/50 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-200">
-          <div className="flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4 shrink-0" />
+        <div role="status" aria-live="polite" className="mx-4 mb-3 rounded-2xl border-2 border-emerald-400/70 bg-emerald-500/15 px-4 py-4 text-base font-bold text-emerald-100 shadow-lg shadow-emerald-500/10">
+          <div className="flex items-center gap-2 text-lg">
+            <CheckCircle2 className="h-5 w-5 shrink-0" />
             <span>Trabajo iniciado a las {format(new Date(svc.workStartedAt), "HH:mm")}</span>
           </div>
-          <p className="mt-1 text-xs font-normal">Para finalizar el trabajo, dirígete al perfil de Mis Trabajos.</p>
+          <p className="mt-2 text-sm font-semibold">Para finalizar tu trabajo, ve a Mis Trabajos y marca como completado.</p>
         </div>
       )}
       {svc.workerArrivedAt && !svc.workStartedAt && (
@@ -989,15 +989,20 @@ function WorkerJobCard({ proposal, autoRate, autoOpenChat, onAutoOpenHandled, on
                 ["accepted", "in_progress"].includes(effectiveStatus) &&
                 !svc.workerArrivedAt &&
                 !svc.workStartedAt && (
-                <Button
-                  size="sm"
-                  className="bg-primary text-primary-foreground"
-                  onClick={markArrival}
-                  disabled={arriveMutation.isPending}
-                >
-                  <MapPin className="w-3.5 h-3.5 mr-1.5" />
-                  {arriveMutation.isPending ? "Registrando llegada…" : "Llegué al domicilio"}
-                </Button>
+                <div className="flex flex-col items-start gap-1">
+                  <Button
+                    size="sm"
+                    className="bg-primary text-primary-foreground"
+                    onClick={markArrival}
+                    disabled={arriveMutation.isPending}
+                  >
+                    <MapPin className="w-3.5 h-3.5 mr-1.5" />
+                    {arriveMutation.isPending ? "Registrando llegada…" : "Llegué al domicilio"}
+                  </Button>
+                  <p className="max-w-sm text-xs text-muted-foreground">
+                    Se te darán 10 minutos para iniciar el trabajo. Si no lo inicias manualmente, se dará por iniciado automáticamente al finalizar el tiempo.
+                  </p>
+                </div>
               )}
               {proposal.status === "accepted" &&
                 ["accepted", "in_progress"].includes(effectiveStatus) &&

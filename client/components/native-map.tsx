@@ -630,8 +630,10 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
     let cancelled = false;
 
     async function init() {
+      if (!prewarm && visible === false) return;
       if (!containerRef.current || initializedRef.current) return;
       initializedRef.current = true;
+      setErrorMsg(null);
 
       try {
         await waitForSize(containerRef.current);
@@ -709,7 +711,10 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
           config: nativeConfig,
           forceCreate: true,
         });
-        if (cancelled) { await map.destroy(); return; }
+        if (cancelled) {
+          await map.destroy();
+          return;
+        }
         mapRef.current = map;
         mapIdRef.current = (map as any).id ?? null;
         readyRef.current = true;
@@ -806,6 +811,7 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
           });
         } catch { /* no-op si el SDK no lo soporta */ }
       } catch (err: any) {
+        if (cancelled) return;
         console.error("[NativeMap] error init:", err);
         setErrorMsg(String(err?.message || err));
         initializedRef.current = false;
@@ -816,6 +822,17 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
 
     return () => {
       cancelled = true;
+      if (!mapRef.current) initializedRef.current = false;
+    };
+    // Reintentar cuando la pantalla de inicio oculta se vuelve visible.
+    // No se destruye el mapa al cambiar de pantalla: el efecto separado de
+    // visibilidad sigue reduciendo/restaurando sus bounds nativos.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, prewarm]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
       readyRef.current = false;
       const m = mapRef.current;
@@ -827,7 +844,6 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
       }
       initializedRef.current = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function syncMarkersInner(next: NativeMarkerSpec[]) {

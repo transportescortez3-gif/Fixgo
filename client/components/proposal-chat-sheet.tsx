@@ -26,7 +26,7 @@ import {
   Check, CheckCheck, CheckCircle, Loader2, Lock, Send, ThumbsDown,
   DollarSign, RefreshCw, Phone, PhoneMissed, X, ArrowLeft, Handshake, MapPin, Navigation,
   Landmark, Copy, ShieldCheck, Receipt, Paperclip, FileText, Image as ImageIcon,
-  Video, Music, Archive, Download,
+  Video, Music, Archive, Download, ArrowRight,
 } from "lucide-react";
 import { UserProfileSheet } from "@/components/user-profile-sheet";
 import { useCountdown } from "@/components/cancellation-charge";
@@ -1455,9 +1455,9 @@ export function ProposalChatSheet({
                   <button
                     type="button"
                     onClick={() => setLocation(`/mis-trabajos?securitySelfieServiceId=${serviceId}`)}
-                    className="mt-2 rounded-lg bg-green-600 px-3 py-1.5 text-[11px] font-bold text-white transition hover:bg-green-500"
+                    className="mt-2 inline-flex items-center gap-2 rounded-lg bg-green-600 px-3 py-1.5 text-[11px] font-bold text-white ring-2 ring-green-300/70 shadow-lg shadow-green-500/30 transition hover:bg-green-500 motion-safe:animate-pulse motion-reduce:animate-none"
                   >
-                    Ir a Mis Trabajos
+                    Ir a Mis Trabajos <ArrowRight className="h-4 w-4 motion-safe:animate-bounce motion-reduce:animate-none" />
                   </button>
                 </>
               ) : (
@@ -1768,9 +1768,9 @@ export function ProposalChatSheet({
                         <button
                           type="button"
                           onClick={() => setLocation(`/mis-trabajos?securitySelfieServiceId=${serviceId}`)}
-                          className="mt-2 w-full rounded-lg bg-amber-500 px-3 py-2 font-bold text-black"
+                          className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-3 py-2 font-bold text-black ring-2 ring-amber-300/70 shadow-lg shadow-amber-500/30 motion-safe:animate-pulse motion-reduce:animate-none"
                         >
-                          Ir a Mis Trabajos
+                          Ir a Mis Trabajos <ArrowRight className="h-4 w-4 motion-safe:animate-bounce motion-reduce:animate-none" />
                         </button>
                       </div>
                     </div>

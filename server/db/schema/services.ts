@@ -46,6 +46,7 @@ export const servicesTable = pgTable("services", {
   // Fin de la ventana de cancelación gratis: se fija al confirmar el acuerdo
   // en el chat (ahora + 10 min). La dirección se revela al experto al expirar.
   freeCancelUntil: timestamp("free_cancel_until", { withTimezone: true }),
+  freeCancelEndNotifiedAt: timestamp("free_cancel_end_notified_at", { withTimezone: true }),
   // Arrival and actual-work timestamps are separate from negotiation/assignment
   // state. A proposal may already be in_progress before work physically starts.
   workerArrivedAt: timestamp("worker_arrived_at", { withTimezone: true }),

@@ -5,7 +5,7 @@ interface GlobalSocketHandlers {
   onNewServiceRequest?: (data: any) => void;
   onNewNotification?: (data: { type: string; relatedId: number | null; targetRole?: string | null }) => void;
   onProposalUpdated?: (data: { serviceId: number; action: string }) => void;
-  onServiceUpdated?: (data: { serviceId: number; status?: string }) => void;
+  onServiceUpdated?: (data: { serviceId: number; status?: string; autoStarted?: boolean }) => void;
   onNewMessage?: (msg: any) => void;
   onNotificationsUpdated?: (data: { action: string; id?: number }) => void;
   onSubscriptionUpdated?: (data: { status: string; subscriptionId?: number }) => void;

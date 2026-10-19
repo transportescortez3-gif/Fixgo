@@ -13,8 +13,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { ChevronDown, Star, Clock, X, Check, XCircle, ChevronLeft, Loader2, Navigation, MessageCircle, LayoutGrid, ChevronRight, Users, Zap, RefreshCw, AlertCircle, Search, User, MapPin, Eye, ShieldCheck, BadgeCheck, ThumbsDown, MessageSquare } from "lucide-react";
 import { ProposalChatSheet } from "@/components/proposal-chat-sheet";
 import { getCategoryStyle, getCategoryMarkerColor, getCategoryEmoji } from "@/lib/category-icons";
-import { useLocation } from "wouter";
-import { motion, AnimatePresence } from "framer-motion";
+import {
+  getCategoryBrowserCategoryId,
+  getCategoryBrowserReturnUrl,
+  getCategoryBrowserServiceRequestUrl,
+  isHomeCategoryBrowserLocation,
+} from "@/lib/category-browser-navigation";
+import { useLocation, useSearch } from "wouter";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import { NativeMap, type NativeMapHandle, type NativeMarkerSpec, type NativeCircleSpec } from "./native-map";
 import { getLastKnownPosition, getGeolocationStatus, onGeolocationStatusChange, getCurrentPosition, type GeoStatus } from "@/lib/geolocation";
 import { GeoPermissionBanner } from "./geo-permission-banner";
@@ -320,32 +326,42 @@ function CategoryBrowserSheet({
   open,
   onClose,
   categories,
+  categoriesLoading,
+  categoriesError,
+  categoriesFetching,
+  onRetry,
   onNavigate,
+  expandedId,
+  onExpandedChange,
 }: {
   open: boolean;
   onClose: () => void;
   categories: any[];
+  categoriesLoading: boolean;
+  categoriesError: boolean;
+  categoriesFetching: boolean;
+  onRetry: () => void;
   onNavigate: (categoryId: number, subcategoryId?: number) => void;
+  expandedId: number | null;
+  onExpandedChange: (categoryId: number | null) => void;
 }) {
-  const [expandedId, setExpandedId] = useState<number | null>(null);
-
   const expandedCat = categories.find((c: any) => c.id === expandedId) ?? null;
   const hasSubs = (cat: any) => Array.isArray(cat.subcategories) && cat.subcategories.length > 0;
 
   const handleCategoryClick = (cat: any) => {
     if (expandedId === cat.id) {
-      setExpandedId(null);
+      onExpandedChange(null);
       return;
     }
     if (!hasSubs(cat)) {
       onNavigate(cat.id);
       return;
     }
-    setExpandedId(cat.id);
+    onExpandedChange(cat.id);
   };
 
   const handleClose = () => {
-    setExpandedId(null);
+    onExpandedChange(null);
     onClose();
   };
 
@@ -377,9 +393,61 @@ function CategoryBrowserSheet({
           </div>
 
           <div className="flex-1 overflow-y-auto">
-            {/* Grid de categorías con acordeón inline */}
-            <div className="px-3 pt-3 pb-3 space-y-0">
-              {(() => {
+            {categoriesLoading ? (
+              <div role="status" aria-live="polite" className="flex min-h-56 flex-col items-center justify-center gap-3 px-6 text-center">
+                <Loader2 className="h-7 w-7 animate-spin text-primary" aria-hidden="true" />
+                <p className="text-sm font-medium text-muted-foreground">Cargando categorías…</p>
+              </div>
+            ) : categoriesError && categories.length === 0 ? (
+              <div role="alert" className="flex min-h-56 flex-col items-center justify-center gap-3 px-6 text-center">
+                <AlertCircle className="h-8 w-8 text-destructive" aria-hidden="true" />
+                <div>
+                  <p className="font-bold text-foreground">No pudimos cargar las categorías</p>
+                  <p className="mt-1 text-sm text-muted-foreground">Revisa tu conexión e inténtalo de nuevo.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  disabled={categoriesFetching}
+                  className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+                >
+                  <RefreshCw className={`h-4 w-4 ${categoriesFetching ? "animate-spin" : ""}`} aria-hidden="true" />
+                  Reintentar
+                </button>
+              </div>
+            ) : categories.length === 0 ? (
+              <div className="flex min-h-56 flex-col items-center justify-center gap-3 px-6 text-center">
+                <LayoutGrid className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
+                <div>
+                  <p className="font-bold text-foreground">Aún no hay categorías disponibles</p>
+                  <p className="mt-1 text-sm text-muted-foreground">Vuelve más tarde para explorar los servicios.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className="rounded-xl border border-border px-4 py-2.5 text-sm font-bold text-foreground transition-colors hover:bg-muted"
+                >
+                  Cerrar
+                </button>
+              </div>
+            ) : (
+              <>
+                {categoriesError && (
+                  <div role="status" className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-xl border border-destructive/30 bg-destructive/5 px-3 py-2.5">
+                    <p className="text-sm text-foreground">No se pudieron actualizar las categorías. Mostramos las disponibles.</p>
+                    <button
+                      type="button"
+                      onClick={onRetry}
+                      disabled={categoriesFetching}
+                      className="shrink-0 text-sm font-bold text-primary disabled:opacity-60"
+                    >
+                      Reintentar
+                    </button>
+                  </div>
+                )}
+                {/* Grid de categorías con acordeón inline */}
+                <div className="px-3 pt-3 pb-3 space-y-0">
+                  {(() => {
                 const COLS = 4;
                 const rows: any[][] = [];
                 for (let i = 0; i < categories.length; i += COLS) {
@@ -482,8 +550,10 @@ function CategoryBrowserSheet({
                     </AnimatePresence>
                   </div>
                 ));
-              })()}
-            </div>
+                  })()}
+                </div>
+              </>
+            )}
           </div>
         </motion.div>
       )}
@@ -835,6 +905,7 @@ function ProposalCard({ proposal, serviceId, onAccepted, onOpenChat, onReview, u
 export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   const { user, isClient } = useAuth();
   const [currentPath, setLocation] = useLocation();
+  const search = useSearch();
   const mapType = "roadmap" as const;
   // 29-may-2026: NO pasar user.lat/lng del DB como inicial.
   // Las coords del DB pueden ser incorrectas (grabadas por un bug GPS antiguo).
@@ -842,10 +913,11 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   const userLocation = useSmoothPosition();
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [selectedSubcategoryId, setSelectedSubcategoryId] = useState<number | null>(null);
-  const [categoryListOpen, setCategoryListOpen] = useState(false);
-  const [subcategoryListOpen, setSubcategoryListOpen] = useState(false);
+  const [serviceSelectionStep, setServiceSelectionStep] = useState<1 | 2 | 3>(1);
+  const prefersReducedMotion = useReducedMotion();
   const [proposalsPanelOpen, setProposalsPanelOpen] = useState(false);
   const [categoryBrowserOpen, setCategoryBrowserOpen] = useState(false);
+  const [categoryBrowserExpandedId, setCategoryBrowserExpandedId] = useState<number | null>(null);
   const [geoStatus, setGeoStatus] = useState<GeoStatus>(getGeolocationStatus());
   const [radarSeconds, setRadarSeconds] = useState(0);
   const [radarDismissed, setRadarDismissed] = useState(false);
@@ -864,8 +936,15 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   useEffect(() => {
     setSelectedCategoryId(null);
     setSelectedSubcategoryId(null);
+    setServiceSelectionStep(1);
     setCategoryBrowserOpen(false);
   }, [currentPath]);
+
+  useEffect(() => {
+    if (currentPath !== "/" || !isHomeCategoryBrowserLocation(search)) return;
+    setCategoryBrowserExpandedId(getCategoryBrowserCategoryId(search));
+    setCategoryBrowserOpen(true);
+  }, [currentPath, search]);
 
   useEffect(() => {
     const prev = document.documentElement.style.overflow;
@@ -930,7 +1009,13 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
     return () => { socket.off("service:viewers_count", onViewersCount); };
   }, [user]);
 
-  const { data: categories } = useListCategories({ query: { staleTime: 30 * 60_000 } } as any);
+  const {
+    data: categories,
+    isLoading: categoriesLoading,
+    isError: categoriesError,
+    isFetching: categoriesFetching,
+    refetch: refetchCategories,
+  } = useListCategories({ query: { staleTime: 30 * 60_000 } } as any);
   const categoriesList: any[] = Array.isArray(categories) ? categories : [];
 
   const selectedCategory = categoriesList.find((c: any) => c.id === selectedCategoryId) || null;
@@ -1260,12 +1345,42 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
     setLocation(`/services/new${qs ? `?${qs}` : ""}`);
   };
 
+  const handleSelectServiceCategory = (category: any) => {
+    setSelectedCategoryId(category.id);
+    setSelectedSubcategoryId(null);
+    setServiceSelectionStep(category.subcategories?.length > 0 ? 2 : 3);
+  };
+
+  const handleServiceSelectionBack = () => {
+    if (serviceSelectionStep === 3 && subcategories.length > 0) {
+      setServiceSelectionStep(2);
+      return;
+    }
+    setSelectedCategoryId(null);
+    setSelectedSubcategoryId(null);
+    setServiceSelectionStep(1);
+  };
+
   const handleCategoryBrowserNavigate = (categoryId: number, subcategoryId?: number) => {
     setCategoryBrowserOpen(false);
-    const params = new URLSearchParams();
-    params.set("categoryId", String(categoryId));
-    if (subcategoryId) params.set("subcategoryId", String(subcategoryId));
-    setLocation(`/services/new?${params.toString()}`);
+    setCategoryBrowserExpandedId(categoryId);
+    setLocation(getCategoryBrowserReturnUrl("home", categoryId), { replace: true });
+    setLocation(getCategoryBrowserServiceRequestUrl(categoryId, subcategoryId));
+  };
+
+  const handleCategoryBrowserExpandedChange = (categoryId: number | null) => {
+    setCategoryBrowserExpandedId(categoryId);
+    if (categoryId === null) {
+      setLocation("/", { replace: true });
+      return;
+    }
+    setLocation(getCategoryBrowserReturnUrl("home", categoryId), { replace: true });
+  };
+
+  const handleCategoryBrowserClose = () => {
+    setCategoryBrowserOpen(false);
+    setCategoryBrowserExpandedId(null);
+    if (isHomeCategoryBrowserLocation(search)) setLocation("/", { replace: true });
   };
 
   if (!user) return null;
@@ -2103,9 +2218,15 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
       {/* Modal full-screen de navegación por categorías (Path B) */}
       <CategoryBrowserSheet
         open={categoryBrowserOpen}
-        onClose={() => setCategoryBrowserOpen(false)}
+        onClose={handleCategoryBrowserClose}
         categories={categoriesList}
+        categoriesLoading={categoriesLoading}
+        categoriesError={categoriesError}
+        categoriesFetching={categoriesFetching}
+        onRetry={() => { void refetchCategories(); }}
         onNavigate={handleCategoryBrowserNavigate}
+        expandedId={categoryBrowserExpandedId}
+        onExpandedChange={handleCategoryBrowserExpandedChange}
       />
 
 

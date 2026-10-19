@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import ServiceAlertModal from "@/components/service-alert-modal";
-import { LogOut, Home, Briefcase, Users, Bell, User as UserIcon, Settings2, Menu, X, Globe, TrendingUp, ShieldAlert, Search, ShieldCheck, Hammer, TicketCheck, MoreHorizontal, BarChart3, Tag, WifiOff, Crown, Package, ChevronRight, LayoutGrid, ClipboardList, BookOpen, Terminal, Ban, Camera, Lock, Trash2 } from "lucide-react";
+import { LogOut, Home, Briefcase, Users, Bell, User as UserIcon, Settings2, Menu, X, Globe, TrendingUp, ShieldAlert, Search, ShieldCheck, Hammer, TicketCheck, MoreHorizontal, BarChart3, Tag, WifiOff, Crown, Package, ChevronRight, LayoutGrid, ClipboardList, BookOpen, Terminal, Ban, Camera, Lock, Trash2, CheckCircle2, ArrowRight } from "lucide-react";
 import { useLogout, useListNotifications, getListServicesQueryKey, getListNotificationsQueryKey, getListMessagesQueryKey, getGetMeQueryKey, getGetKycStatusQueryKey } from "@/api";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
@@ -30,6 +30,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     : temporarySuspensionUntil;
   useNativeApp();
   const [newJobAlert, setNewJobAlert] = useState<{ serviceId: number; title: string; description: string; address?: string } | null>(null);
+  const [autoStartedServiceId, setAutoStartedServiceId] = useState<number | null>(null);
   const alertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const queryClient = useQueryClient();
@@ -98,6 +99,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     if (sid) {
       queryClient.invalidateQueries({ predicate: (q) => serviceKeyMatches(q.queryKey, sid) });
     }
+    if (data?.autoStarted === true && sid) setAutoStartedServiceId(sid);
   }, [queryClient]);
 
   const handleGlobalProposalUpdated = useCallback((data: any) => {
@@ -616,13 +618,11 @@ export default function Layout({ children }: { children: ReactNode }) {
           </aside>
         )}
 
-        {/* pb: alto del bottom nav (4rem) + safe-area del gesto de Android/iOS +
-            alto del teclado nativo (--keyboard-height, seteado por use-native-app).
-            El pb-[5rem] fijo anterior quedaba corto en teléfonos con barra de
-            gestos y con el teclado abierto: el final de la página (p.ej. el botón
-            Guardar de Mis Trabajos) quedaba tapado e inalcanzable con scroll. */}
+        {/* pb: alto del bottom nav + safe-area del gesto de Android/iOS. Capacitor
+            ya redimensiona el body al abrir el teclado; no sumar su alto otra
+            vez aquí porque reduce dos veces el área útil del contenido. */}
         <main
-          className="min-w-0 w-full max-w-full flex-1 flex flex-col overflow-y-auto overflow-x-clip pb-[calc(4.5rem_+_env(safe-area-inset-bottom,0px)_+_var(--keyboard-height,0px))] lg:pb-0"
+          className="min-w-0 w-full max-w-full flex-1 flex flex-col overflow-y-auto overflow-x-clip pb-[calc(4.5rem_+_env(safe-area-inset-bottom,0px))] lg:pb-0"
         >
           {isRestrictedAccount && location !== "/profile" && location !== "/support" ? (
             <BlockedAccountHome
@@ -667,6 +667,41 @@ export default function Layout({ children }: { children: ReactNode }) {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {autoStartedServiceId !== null && user && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/75 p-5" role="presentation">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="auto-start-notice-title"
+            className="w-full max-w-md rounded-3xl border-2 border-emerald-400 bg-card p-6 shadow-2xl shadow-emerald-500/20 animate-in zoom-in-95 duration-200"
+          >
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-300">
+              <CheckCircle2 className="h-8 w-8" aria-hidden="true" />
+            </div>
+            <h2 id="auto-start-notice-title" className="text-center text-xl font-black text-foreground">
+              Después de 10 minutos se da por iniciado el trabajo.
+            </h2>
+            <p className="mt-3 text-center text-base font-semibold leading-relaxed text-emerald-100">
+              Para finalizar tu trabajo, ve a Mis Trabajos y marca como completado.
+            </p>
+            <div className="mt-6 flex gap-3">
+              <Button variant="outline" className="flex-1" onClick={() => setAutoStartedServiceId(null)}>
+                Cerrar
+              </Button>
+              <Button
+                className="flex-1 bg-emerald-500 font-bold text-slate-950 shadow-lg shadow-emerald-500/30 ring-2 ring-emerald-300/70 hover:bg-emerald-400 motion-safe:animate-pulse motion-reduce:animate-none"
+                onClick={() => {
+                  setAutoStartedServiceId(null);
+                  setLocation("/mis-trabajos");
+                }}
+              >
+                Ir a Mis Trabajos <ArrowRight className="ml-1 inline h-4 w-4 motion-safe:animate-bounce motion-reduce:animate-none" />
+              </Button>
+            </div>
+          </section>
         </div>
       )}
 

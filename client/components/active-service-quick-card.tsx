@@ -95,9 +95,9 @@ export default function ActiveServiceQuickCard({
               event.stopPropagation();
               (onGoToJobs ?? onChat)();
             }}
-            className="mt-1 inline-flex items-center gap-1 rounded-xl bg-emerald-500 px-3 py-2 text-xs font-bold text-slate-950 shrink-0"
+            className="mt-1 inline-flex items-center gap-1 rounded-xl bg-emerald-500 px-3 py-2 text-xs font-bold text-slate-950 shrink-0 ring-2 ring-emerald-300/70 shadow-lg shadow-emerald-500/30 motion-safe:animate-pulse motion-reduce:animate-none"
           >
-            Ir a Mis Trabajos <ArrowRight className="w-4 h-4" />
+            Ir a Mis Trabajos <ArrowRight className="w-4 h-4 motion-safe:animate-bounce motion-reduce:animate-none" />
           </button>
         ) : (
           <button
@@ -115,9 +115,6 @@ export default function ActiveServiceQuickCard({
       </div>
       {onArrive && !workStarted && !arrived && ["accepted", "in_progress"].includes(service.status) && (
         <div className="mt-3 space-y-2">
-          <p className="text-xs text-muted-foreground">
-            Se te darán 10 minutos para iniciar el trabajo. Si no lo inicias manualmente, se dará por iniciado automáticamente al finalizar el tiempo.
-          </p>
           <button
             type="button"
             disabled={arriving}
@@ -131,6 +128,9 @@ export default function ActiveServiceQuickCard({
             <MapPin className="inline w-4 h-4 mr-1.5" />
             {arriving ? "Registrando llegada…" : "Llegué al domicilio"}
           </button>
+          <p className="text-xs text-muted-foreground">
+            Se te darán 10 minutos para iniciar el trabajo. Si no lo inicias manualmente, se dará por iniciado automáticamente al finalizar el tiempo.
+          </p>
         </div>
       )}
       {onStart && arrived && !workStarted && (
@@ -147,7 +147,7 @@ export default function ActiveServiceQuickCard({
         </button>
       )}
       {workStarted && (
-        <p role="status" className="mt-2 text-sm font-bold text-emerald-300">
+        <p role="status" aria-live="polite" className="mt-2 rounded-xl border border-emerald-400/40 bg-emerald-500/10 p-3 text-sm font-bold text-emerald-200">
           Para finalizar el trabajo, dirígete al perfil de Mis Trabajos.
         </p>
       )}

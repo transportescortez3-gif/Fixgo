@@ -199,7 +199,7 @@ export default function Profile() {
   };
 
   const addCategory = (catId: number) => {
-    const maxCats = subLimit("categories");
+    const maxCats = canSelectAllCategories ? Infinity : subLimit("categories");
     setWorkerCategoryIds(prev => {
       if (prev.includes(catId)) return prev;
       if (prev.length >= maxCats) {

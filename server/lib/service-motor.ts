@@ -3,7 +3,7 @@ import { db, servicesTable, usersTable, alertSessionsTable, workerAlertSlotsTabl
 import { userSubscriptionsTable } from "../db/schema/subscriptions";
 import { eq, and, isNull, isNotNull, or, lt, gt, lte, asc, inArray, sql } from "drizzle-orm";
 import { emitToWorkers, emitToUser, emitToService } from "./socketio";
-import { createNotification } from "./createNotification";
+import { createNotification, createNotifications } from "./createNotification";
 import { logger } from "./logger";
 import { MAX_ACTIVE_WORKERS_PER_PHASE, splitAlertRecipients } from "./alert-recipient-selection";
 import { isWorkerPayoutComplete } from "./worker-eligibility";
@@ -497,6 +497,7 @@ async function autoStartArrivedServices(now: Date): Promise<void> {
       status: "in_progress",
       workerArrivedAt: updated.workerArrivedAt,
       workStartedAt: updated.workStartedAt,
+      autoStarted: true,
     };
     emitToService(service.id, "service_updated", payload);
     emitToUser(service.clientId, "service_updated", payload);
@@ -518,6 +519,66 @@ async function autoStartArrivedServices(now: Date): Promise<void> {
       relatedId: service.id,
       targetRole: "worker",
     });
+  }
+}
+
+async function notifyExpiredFreeCancelWindows(now: Date): Promise<void> {
+  const dueServices = await db.select({
+    id: servicesTable.id,
+    title: servicesTable.title,
+    clientId: servicesTable.clientId,
+    workerId: servicesTable.workerId,
+  })
+    .from(servicesTable)
+    .where(and(
+      inArray(servicesTable.status, ["accepted", "in_progress"]),
+      isNotNull(servicesTable.workerId),
+      isNotNull(servicesTable.freeCancelUntil),
+      lte(servicesTable.freeCancelUntil, now),
+      isNull(servicesTable.freeCancelEndNotifiedAt),
+    ));
+
+  for (const service of dueServices) {
+    if (!service.workerId) continue;
+    const [claimed] = await db.update(servicesTable)
+      .set({ freeCancelEndNotifiedAt: now })
+      .where(and(
+        eq(servicesTable.id, service.id),
+        inArray(servicesTable.status, ["accepted", "in_progress"]),
+        eq(servicesTable.workerId, service.workerId),
+        isNotNull(servicesTable.freeCancelUntil),
+        lte(servicesTable.freeCancelUntil, now),
+        isNull(servicesTable.freeCancelEndNotifiedAt),
+      ))
+      .returning({ id: servicesTable.id });
+    if (!claimed) continue;
+
+    try {
+      await createNotifications([
+        {
+          userId: service.workerId,
+          title: "Terminó el tiempo de gracia",
+          message: "Los 10 minutos se acabó, tienes que dirigirte a Mis Trabajos y tomarte una selfie de seguridad para que inicie el trabajo.",
+          type: "service_accepted",
+          relatedId: service.id,
+          targetRole: "worker",
+        },
+        {
+          userId: service.clientId,
+          title: "Terminó el tiempo de gracia",
+          message: "Se acabaron los 10 minutos, el experto va en camino a tu domicilio.",
+          type: "service_accepted",
+          relatedId: service.id,
+          targetRole: "client",
+        },
+      ]);
+    } catch (err) {
+      // El insert en lote es atómico; si falla, liberar la marca para reintentar.
+      await db.update(servicesTable)
+        .set({ freeCancelEndNotifiedAt: null })
+        .where(and(eq(servicesTable.id, service.id), eq(servicesTable.freeCancelEndNotifiedAt, now)));
+      throw err;
+    }
   }
 }
 
@@ -1293,6 +1354,12 @@ export async function runMotorMinuteLoop(): Promise<void> {
     await expirePendingAlertSessions(new Date());
   } catch (err) {
     logger.error({ err }, "alert queue expiration recovery error");
+  }
+
+  try {
+    await notifyExpiredFreeCancelWindows(new Date());
+  } catch (err) {
+    logger.error({ err }, "free-cancel expiry notification recovery error");
   }
 
   try {
