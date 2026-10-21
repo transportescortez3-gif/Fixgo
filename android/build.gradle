@@ -23,7 +23,7 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.8.2'
+        classpath 'com.android.tools.build:gradle:9.0.1'
         classpath 'com.google.gms:google-services:4.4.2'
 
         // NOTE: Do not place your application dependencies here; they belong
@@ -34,9 +34,8 @@ buildscript {
 apply from: "variables.gradle"
 
 subprojects {
-    // Capacitor plugins can request newer AndroidX versions transitively even
-    // when rootProject.ext declares older ones. Keep the resolved graph within
-    // the versions supported by AGP 8.8.2 + Gradle 8.11.
+    // Keep native plugin dependencies aligned with the app's tested Android
+    // toolchain and use patched libraries that support Android 15+ edge-to-edge.
     configurations.configureEach {
         resolutionStrategy.force(
             'androidx.activity:activity:1.10.1',
@@ -44,14 +43,14 @@ subprojects {
             'androidx.browser:browser:1.8.0',
             'androidx.core:core:1.16.0',
             'androidx.core:core-ktx:1.16.0',
-            'com.google.firebase:firebase-messaging:24.1.0'
+            'com.google.firebase:firebase-messaging:24.1.0',
+            'io.ionic.libs:ioncamera-android:1.0.2'
         )
     }
 
     if (name.startsWith('capacitor-') && name != 'capacitor-cordova-android-plugins') {
         // Capacitor 8 plugins declare AGP 8.13.0 inside their generated modules.
-        // Keep them on AGP 8.8.2, compatible with the Gradle 8.11 wrapper,
-        // without requiring changes inside node_modules.
+        // Resolve them against the root AGP 9 version without editing node_modules.
         buildscript {
             repositories {
                 exclusiveContent {
@@ -74,7 +73,7 @@ subprojects {
                 gradlePluginPortal()
             }
             configurations.configureEach {
-                resolutionStrategy.force 'com.android.tools.build:gradle:8.8.2'
+                resolutionStrategy.force 'com.android.tools.build:gradle:9.0.1'
             }
         }
     }

@@ -913,6 +913,8 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   const userLocation = useSmoothPosition();
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [selectedSubcategoryId, setSelectedSubcategoryId] = useState<number | null>(null);
+  const [categoryListOpen, setCategoryListOpen] = useState(false);
+  const [subcategoryListOpen, setSubcategoryListOpen] = useState(false);
   const [serviceSelectionStep, setServiceSelectionStep] = useState<1 | 2 | 3>(1);
   const prefersReducedMotion = useReducedMotion();
   const [proposalsPanelOpen, setProposalsPanelOpen] = useState(false);
@@ -936,6 +938,8 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   useEffect(() => {
     setSelectedCategoryId(null);
     setSelectedSubcategoryId(null);
+    setCategoryListOpen(false);
+    setSubcategoryListOpen(false);
     setServiceSelectionStep(1);
     setCategoryBrowserOpen(false);
   }, [currentPath]);

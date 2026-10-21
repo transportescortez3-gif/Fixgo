@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   rmSync,
+  readFileSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -12,7 +13,8 @@ import { fileURLToPath } from "node:url";
 
 const scriptsDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptsDir, "..");
-const appVersion = "1.3.5";
+const packageJson = JSON.parse(readFileSync(resolve(repoRoot, "package.json"), "utf8"));
+const appVersion = packageJson.version;
 const webOutput = resolve(repoRoot, "dist/public");
 const androidPublic = resolve(repoRoot, "android/app/src/main/assets/public");
 const iosPublic = resolve(repoRoot, "ios/App/App/public");
@@ -36,11 +38,6 @@ const capacitorConfig = {
       androidSplashResourceName: "splash",
       androidScaleType: "CENTER_CROP",
       showSpinner: false,
-    },
-    StatusBar: {
-      style: "Dark",
-      backgroundColor: "#0F172A",
-      overlaysWebView: false,
     },
     Keyboard: {
       resize: "body",

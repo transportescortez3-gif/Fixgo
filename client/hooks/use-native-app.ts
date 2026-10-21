@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, SystemBars, SystemBarsStyle } from "@capacitor/core";
 import { useLocation } from "wouter";
 import { handleCallDeepLink } from "./use-call";
 
@@ -21,10 +21,9 @@ export function useNativeApp() {
 
     (async () => {
       try {
-        // StatusBar — barra de estado oscura acorde al tema
-        const { StatusBar, Style } = await import("@capacitor/status-bar");
-        await StatusBar.setStyle({ style: Style.Dark });
-        await StatusBar.setBackgroundColor({ color: "#0F172A" });
+        // SystemBars usa la API edge-to-edge moderna para fijar iconos claros
+        // sin las llamadas de color de ventana obsoletas en Android 15+.
+        await SystemBars.setStyle({ style: SystemBarsStyle.Dark });
         cleanupFns.push(() => {});
       } catch {}
 
@@ -79,9 +78,7 @@ export function useNativeApp() {
 
         const resumeHandler = await App.addListener("resume", async () => {
           try {
-            const { StatusBar, Style } = await import("@capacitor/status-bar");
-            await StatusBar.setStyle({ style: Style.Dark });
-            await StatusBar.setBackgroundColor({ color: "#0F172A" });
+            await SystemBars.setStyle({ style: SystemBarsStyle.Dark });
           } catch {}
         });
 

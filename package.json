@@ -1,6 +1,6 @@
 {
   "name": "fixgo",
-  "version": "1.3.5",
+  "version": "1.3.8",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.26.1",
@@ -10,6 +10,9 @@
   "scripts": {
     "dev": "tsx server/index.ts",
     "test:home-alerts": "tsx client/lib/home-alerts.test.ts",
+    "test:client-service-selection": "tsx client/lib/service-selection.test.ts",
+    "test:category-browser-navigation": "tsx client/lib/category-browser-navigation.test.ts",
+    "test:service-alerts": "tsx server/lib/alert-recipient-selection.test.ts && tsx artifacts/api-server/src/lib/service-alert-policy.test.ts",
     "test:account-suspension": "tsx server/lib/account-suspension-regression.test.ts && tsx client/lib/account-suspension.test.ts",
     "test:chat-attachments": "tsx server/lib/chat-attachments-regression.test.ts",
     "test:e2e-key-backup": "tsx client/lib/e2e-key-backup-regression.test.ts",
@@ -19,13 +22,13 @@
     "db:push": "drizzle-kit push --config ./drizzle.config.ts",
     "db:push-force": "drizzle-kit push --force --config ./drizzle.config.ts",
     "postinstall": "node scripts/apply-android-patches.mjs",
-    "mobile:prepare": "pnpm build && node scripts/apply-android-patches.mjs && node scripts/mobile-prepare.mjs",
+    "mobile:prepare": "npm run build && node scripts/apply-android-patches.mjs && node scripts/mobile-prepare.mjs",
     "mobile:check": "node scripts/mobile-check.mjs",
-    "mobile:build": "pnpm mobile:prepare",
-    "mobile:android": "pnpm mobile:prepare && node scripts/mobile-check.mjs android && cd android && ./gradlew assembleDebug",
-    "mobile:android:release": "pnpm mobile:prepare && node scripts/mobile-check.mjs android --release && cd android && ./gradlew bundleRelease",
-    "mobile:ios": "pnpm mobile:prepare && node scripts/mobile-check.mjs ios && xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' build",
-    "mobile:sync": "pnpm mobile:prepare"
+    "mobile:build": "npm run mobile:prepare",
+    "mobile:android": "npm run mobile:prepare && node scripts/mobile-check.mjs android && cd android && ./gradlew assembleDebug",
+    "mobile:android:release": "npm run mobile:prepare && node scripts/mobile-check.mjs android --release && cd android && ./gradlew bundleRelease && cd .. && node scripts/package-android-release.mjs",
+    "mobile:ios": "npm run mobile:prepare && node scripts/mobile-check.mjs ios && xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' build",
+    "mobile:sync": "npm run mobile:prepare"
   },
   "dependencies": {
     "@capacitor-community/keep-awake": "^8.0.1",
@@ -44,7 +47,6 @@
     "@capacitor/network": "^8.0.1",
     "@capacitor/push-notifications": "^8.0.3",
     "@capacitor/splash-screen": "^8.0.1",
-    "@capacitor/status-bar": "^8.0.2",
     "@mediapipe/tasks-vision": "^0.10.35",
     "@react-google-maps/api": "^2.20.8",
     "@socket.io/redis-adapter": "^8.3.0",

@@ -2,8 +2,7 @@ ext {
     minSdkVersion = 24
     compileSdkVersion = 36
     targetSdkVersion = 36
-    // Versions compatible with AGP 8.8.2 + Gradle 8.11. Newer activity 1.11,
-    // core 1.17 and browser 1.9 require AGP 8.9.1 / Gradle 8.11.1.
+    androidxMaterialVersion = '1.14.0'
     androidxActivityVersion = '1.10.1'
     androidxAppCompatVersion = '1.7.1'
     androidxCoordinatorLayoutVersion = '1.3.0'
