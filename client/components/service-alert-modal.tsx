@@ -6,6 +6,11 @@ import { useAuth } from "@/hooks/use-auth";
 import { Star, MapPin, Crown, Zap, X, ArrowRight } from "lucide-react";
 import { ClientIdentity } from "@/components/client-identity";
 import { promptServiceRequestOverlayPermissionIfNeeded } from "@/plugins/service-request-alerts";
+import {
+  mergeIncomingServiceAlert,
+  type QueuedServiceAlert,
+  type ServiceAlertPayload,
+} from "@/lib/service-alert-state";
 
 async function patchAlertSession(serviceId: number, action: "skip" | "view") {
   const token = localStorage.getItem("fixgo_token") ?? "";
@@ -19,27 +24,11 @@ async function patchAlertSession(serviceId: number, action: "skip" | "view") {
   }).catch(() => {});
 }
 
-interface AlertPayload {
-  serviceId: number;
-  deliveryId?: string;
-  title: string;
-  clientName: string;
-  convivenciaScore: number | null;
-  distanceKm: number | null;
-  phase?: "promax" | "nearby";
-  totalSeconds?: number;
-  budgetNote?: string | null;
-}
-
-interface QueuedAlert extends AlertPayload {
-  expiresAt: number;
-}
-
 // ─── Estado a nivel de módulo ─────────────────────────────────────────────────
 // Persiste la cola de alertas a través de remounts (navegación entre páginas).
 // Si el componente se desmonta y vuelve a montar (e.g. auth re-check), la cola
 // y los expiresAt originales se conservan — el countdown NO se reinicia.
-let _moduleQueue: QueuedAlert[] = [];
+let _moduleQueue: QueuedServiceAlert[] = [];
 const _moduleHandledIds = new Set<number>();
 
 export default function ServiceAlertModal() {
@@ -47,11 +36,11 @@ export default function ServiceAlertModal() {
   const [, navigate] = useLocation();
 
   // Inicializar desde el módulo para que el remount recupere la cola existente
-  const [queue, setQueueState] = useState<QueuedAlert[]>(_moduleQueue);
+  const [queue, setQueueState] = useState<QueuedServiceAlert[]>(_moduleQueue);
   const [secondsLeft, setSecondsLeft] = useState(60);
 
   // Wrapper que sincroniza React state ↔ módulo en cada cambio
-  const setQueue = useCallback((fn: QueuedAlert[] | ((prev: QueuedAlert[]) => QueuedAlert[])) => {
+  const setQueue = useCallback((fn: QueuedServiceAlert[] | ((prev: QueuedServiceAlert[]) => QueuedServiceAlert[])) => {
     setQueueState(prev => {
       const next = typeof fn === "function" ? fn(prev) : fn;
       _moduleQueue = next;
@@ -132,41 +121,11 @@ export default function ServiceAlertModal() {
     const socket = getSocket();
     if (!socket) return;
 
-    const handleActiveAlert = (payload: AlertPayload) => {
-      const total = payload.totalSeconds ?? 60;
-      const expiresAt = Date.now() + total * 1000;
+    const handleActiveAlert = (payload: ServiceAlertPayload) => {
       setQueue(prev => {
-        const existingIdx = prev.findIndex(a => a.serviceId === payload.serviceId);
-        if (existingIdx >= 0) {
-          const existing = prev[existingIdx];
-          if (payload.deliveryId && existing.deliveryId === payload.deliveryId) {
-            if (existing.budgetNote === payload.budgetNote) return prev;
-            const updated = [...prev];
-            updated[existingIdx] = {
-              ...existing,
-              ...payload,
-              totalSeconds: existing.totalSeconds,
-              expiresAt: existing.expiresAt,
-            };
-            return updated;
-          }
-          if (payload.deliveryId && existing.deliveryId !== payload.deliveryId) {
-            _moduleHandledIds.delete(payload.serviceId);
-            const updated = [...prev];
-            updated[existingIdx] = { ...payload, expiresAt };
-            return updated;
-          }
-          // Si la entrada aún es válida (no expirada), no resetear el countdown
-          if (existing.expiresAt > Date.now()) return prev;
-          // Entrada expirada → reemplazar con la alerta fresca del servidor
-          // Esto evita que una entrada vencida haga auto-skip de la nueva alerta
-          _moduleHandledIds.delete(payload.serviceId);
-          const updated = [...prev];
-          updated[existingIdx] = { ...payload, expiresAt };
-          return updated;
-        }
-        _moduleHandledIds.delete(payload.serviceId);
-        return [...prev, { ...payload, expiresAt }];
+        const merged = mergeIncomingServiceAlert(prev, payload);
+        if (merged.resetHandled) _moduleHandledIds.delete(payload.serviceId);
+        return merged.queue;
       });
     };
 
@@ -297,7 +256,7 @@ export default function ServiceAlertModal() {
                       <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full"
                         style={{ background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.25)" }}>
                         <Crown className="w-3 h-3 text-amber-400" />
-                        <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest">Pro+ Exclusivo</span>
+                        <span className="text-[10px] font-black text-amber-400 uppercase tracking-widest">Para los Pro Max</span>
                       </div>
                     ) : (
                       <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full"
@@ -308,7 +267,7 @@ export default function ServiceAlertModal() {
                           animate={{ opacity: [1, 0.3, 1] }}
                           transition={{ repeat: Infinity, duration: 1.2 }}
                         />
-                        <span className="text-[10px] font-black text-primary uppercase tracking-widest">Solicitud cercana</span>
+                        <span className="text-[10px] font-black text-primary uppercase tracking-widest">Para Pro y Gratis</span>
                       </div>
                     )}
 

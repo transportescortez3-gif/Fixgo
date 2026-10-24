@@ -5,7 +5,10 @@ import { eq, and, isNull, isNotNull, or, lt, gt, lte, asc, inArray, sql } from "
 import { emitToWorkers, emitToUser, emitToService } from "./socketio";
 import { createNotification, createNotifications } from "./createNotification";
 import { logger } from "./logger";
-import { MAX_ACTIVE_WORKERS_PER_PHASE, splitAlertRecipients } from "./alert-recipient-selection";
+import {
+  NEARBY_DELAY_MS,
+  splitAlertRecipients,
+} from "./alert-recipient-selection";
 import { isWorkerPayoutComplete } from "./worker-eligibility";
 import { finalizeCompletionSideEffects } from "./complete-service";
 
@@ -14,8 +17,8 @@ import { finalizeCompletionSideEffects } from "./complete-service";
 //
 // Fase 1 — ACTIVA (alerta emergente):
 //   1a) Pro Max: alerta inmediata (cualquier distancia). Timer: ACTIVE_TIMEOUT_MS.
-//   1b) Cercanos (≤NEARBY_RADIUS_KM): alerta llega NEARBY_DELAY_MS después del Pro Max.
-//       Si el servicio ya fue tomado en esos 13s, los cercanos NO reciben la alerta.
+//   1b) Pro y Gratis cercanos: alerta llega NEARBY_DELAY_MS después del Pro Max.
+//       Si el servicio ya fue tomado en esos 10s, los cercanos NO reciben la alerta.
 //       Timer: ACTIVE_TIMEOUT_MS − NEARBY_DELAY_MS.
 //   Si todos rechazan/expiran → Fase 2.
 //
@@ -24,7 +27,6 @@ import { finalizeCompletionSideEffects } from "./complete-service";
 //   Mecanismo: emite service:available → aparece en la lista inferior del worker.
 // ─────────────────────────────────────────────────────────────────────────────
 const ACTIVE_TIMEOUT_MS = 60_000;     // 60 s para la fase activa (Pro Max + cercanos)
-const NEARBY_DELAY_MS = 13_000;       // Ventaja Pro Max: cercanos reciben la alerta 13s después
 const ARRIVAL_AUTO_START_DELAY_MS = 10 * 60_000;
 
 const PROMAX_PLAN_CODES = ["pro_plus_monthly", "pro_plus_annual"];
@@ -77,7 +79,7 @@ async function getClientInfo(clientId: number) {
  */
 export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean> {
   const now = new Date();
-  const dispatch = await db.transaction(async (tx) => {
+  const dispatchResult = await db.transaction(async (tx) => {
     const [worker] = await tx.select({
       role: usersTable.role,
       isAvailable: usersTable.isAvailable,
@@ -103,6 +105,17 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
       ))
       .limit(1);
     if (assignedServices.length > 0) return null;
+
+    const expiredSessions = await tx.update(alertSessionsTable)
+      .set({ response: "skipped", respondedAt: now })
+      .where(and(
+        eq(alertSessionsTable.workerId, workerId),
+        eq(alertSessionsTable.response, "pending"),
+        isNull(alertSessionsTable.deliveredAt),
+        lte(alertSessionsTable.expiresAt, now),
+      ))
+      .returning({ serviceId: alertSessionsTable.serviceId });
+    const expiredServiceIds = [...new Set(expiredSessions.map((session) => session.serviceId))];
 
     const [candidate] = await tx.select({
       sessionId: alertSessionsTable.id,
@@ -134,10 +147,14 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
           ),
         ),
       ))
-      .orderBy(asc(alertSessionsTable.availableAt), asc(alertSessionsTable.sentAt))
+      .orderBy(
+        asc(alertSessionsTable.availableAt),
+        asc(alertSessionsTable.sentAt),
+        asc(alertSessionsTable.id),
+      )
       .limit(1);
 
-    if (!candidate) return null;
+    if (!candidate) return { dispatch: null, expiredServiceIds };
 
     const deliveryId = randomUUID();
     const [slot] = await tx.insert(workerAlertSlotsTable).values({
@@ -147,7 +164,7 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
       deliveryId,
       updatedAt: now,
     }).onConflictDoNothing().returning({ workerId: workerAlertSlotsTable.workerId });
-    if (!slot) return null;
+    if (!slot) return { dispatch: null, expiredServiceIds };
 
     const [session] = await tx.update(alertSessionsTable)
       .set({ deliveredAt: now, deliveryId, sentAt: now })
@@ -162,12 +179,17 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
 
     if (!session) {
       await tx.delete(workerAlertSlotsTable).where(eq(workerAlertSlotsTable.workerId, workerId));
-      return null;
+      return { dispatch: null, expiredServiceIds };
     }
 
-    return { ...candidate, deliveryId };
+    return { dispatch: { ...candidate, deliveryId }, expiredServiceIds };
   });
 
+  if (!dispatchResult) return false;
+  for (const serviceId of dispatchResult.expiredServiceIds) {
+    await checkAllResponded(serviceId);
+  }
+  const dispatch = dispatchResult.dispatch;
   if (!dispatch) return false;
 
   // Do not emit an alert if the reservation was already invalidated by a
@@ -231,6 +253,8 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
     highPriority: true,
     deliveryId: dispatch.deliveryId,
     alertExpiresAt: dispatch.expiresAt,
+    phase,
+    budgetNote: phase === "promax" ? (dispatch.budgetNote ?? null) : null,
   }).catch((error) => logger.error({
     err: error,
     serviceId: dispatch.serviceId,
@@ -740,10 +764,7 @@ async function launchCombinedActivePhase(
     excludedByRadius: allEligible.length - rankedCandidates.length,
   }, "motor: radius filter diagnostics");
 
-  const { proMaxWorkers, nearbyWorkers } = splitAlertRecipients(
-    rankedCandidates,
-    MAX_ACTIVE_WORKERS_PER_PHASE,
-  );
+  const { proMaxWorkers, nearbyWorkers } = splitAlertRecipients(rankedCandidates);
   const qualified = [...proMaxWorkers, ...nearbyWorkers];
 
   logger.info({
@@ -808,7 +829,7 @@ async function launchCombinedActivePhase(
     await dispatchNextQueuedAlert(worker.id);
   }
 
-  // ── Fase 1b: Cercanos (no Pro Max) reciben la alerta 13s después ─────────
+  // ── Fase 1b: Pro y Gratis cercanos reciben la alerta 10s después ─────────
   if (nearbyWorkers.length > 0) {
     setTimeout(async () => {
       try {

@@ -1,4 +1,9 @@
-packages: []
+packages:
+  - artifacts/api-server
+  - artifacts/fixxer-peru
+  - artifacts/fixxer-peru/api
+  - artifacts/fixxer-peru/db
+  - lib/db
 
 autoInstallPeers: false
 

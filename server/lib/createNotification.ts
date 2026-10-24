@@ -9,8 +9,10 @@ export async function createNotification(data: InsertNotification & {
   highPriority?: boolean;
   deliveryId?: string;
   alertExpiresAt?: Date | string;
+  phase?: "promax" | "nearby";
+  budgetNote?: string | null;
 }): Promise<void> {
-  const { highPriority, deliveryId, alertExpiresAt, ...dbData } = data;
+  const { highPriority, deliveryId, alertExpiresAt, phase, budgetNote, ...dbData } = data;
   await db.insert(notificationsTable).values(dbData);
   logger.info({
     userId: data.userId,
@@ -45,6 +47,10 @@ export async function createNotification(data: InsertNotification & {
       type: data.type,
       ...(data.targetRole ? { targetRole: data.targetRole } : {}),
       ...(deliveryId ? { deliveryId } : {}),
+      ...(data.type === "service_request" && phase ? { phase } : {}),
+      ...(data.type === "service_request" && phase === "promax" && budgetNote
+        ? { budgetNote }
+        : {}),
     };
     const androidData = data.type === "service_request" && alertExpiresAt
       ? { ...pushData, alertExpiresAt: typeof alertExpiresAt === "string" ? alertExpiresAt : alertExpiresAt.toISOString() }

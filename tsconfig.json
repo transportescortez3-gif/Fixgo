@@ -17,5 +17,13 @@
       "@/*": ["./client/*"]
     }
   },
-  "include": ["server/**/*", "client/**/*", "vite.config.ts", "drizzle.config.ts", "build.mjs"]
+  "include": [
+    "client/**/*",
+    "server/**/*",
+    "lib/db/src/**/*",
+    "scripts/**/*.ts",
+    "vite.config.ts",
+    "drizzle.config.ts",
+    "build.mjs"
+  ]
 }
