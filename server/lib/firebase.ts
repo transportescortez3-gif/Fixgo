@@ -37,9 +37,9 @@ export async function sendPushNotification(
   data?: Record<string, string>,
   highPriority = false,
   androidData?: Record<string, string>,
-): Promise<void> {
+): Promise<boolean> {
   const app = getFirebaseApp();
-  if (!app) return;
+  if (!app) return false;
 
   const isServiceAlert = highPriority &&
     (data?.type === "service_request" || data?.type === "worker_arrived");
@@ -106,12 +106,14 @@ export async function sendPushNotification(
       },
       data: messageData,
     });
+    return true;
   } catch (err: any) {
     if (err?.errorInfo?.code === "messaging/registration-token-not-registered") {
       logger.info({ fcmToken: fcmToken.slice(-8) }, "FCM token expired/unregistered — skipping");
     } else {
       logger.warn({ err }, "Failed to send push notification");
     }
+    return false;
   }
 }
 

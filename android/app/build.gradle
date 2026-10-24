@@ -10,8 +10,8 @@ android {
         applicationId "com.fixxer.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode = (System.getenv("MOBILE_VERSION_CODE") ?: "11").toInteger()
-        versionName = System.getenv("MOBILE_VERSION_NAME") ?: "1.3.8"
+        versionCode = (System.getenv("MOBILE_VERSION_CODE") ?: "12").toInteger()
+        versionName = System.getenv("MOBILE_VERSION_NAME") ?: "1.3.9"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
         // Inyectamos la API key de Google Maps para MOBILE en el manifest.

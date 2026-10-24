@@ -20,6 +20,9 @@ pluginManagement {
         gradlePluginPortal()
     }
 }
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
 
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
@@ -44,6 +47,27 @@ dependencyResolutionManagement {
         flatDir {
             dirs 'capacitor-cordova-android-plugins/src/main/libs', 'app/libs'
         }
+    }
+}
+
+// Apply project-owned Capacitor compatibility patches before Gradle evaluates
+// included plugin projects. This keeps Android Studio sync working after a
+// fresh dependency install, not only after running the mobile preparation task.
+def patchScript = new File(settingsDir.parentFile, 'scripts/apply-android-patches.mjs')
+if (patchScript.isFile()) {
+    def patchProcess = new ProcessBuilder('node', patchScript.absolutePath)
+        .directory(settingsDir.parentFile)
+        .redirectErrorStream(true)
+        .start()
+    def patchOutput = patchProcess.inputStream.getText('UTF-8')
+    def patchExitCode = patchProcess.waitFor()
+    if (patchOutput) {
+        println(patchOutput)
+    }
+    if (patchExitCode != 0) {
+        throw new GradleException(
+            "No se pudieron aplicar los parches Android. Ejecuta 'node scripts/apply-android-patches.mjs' desde la raíz del proyecto."
+        )
     }
 }
 

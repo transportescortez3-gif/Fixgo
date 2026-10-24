@@ -4,11 +4,30 @@ import { useAuth } from "./use-auth";
 import { registerWebPush, isWebPushConfigured } from "@/lib/firebase-messaging";
 import { APP_URL } from "@/lib/app-config";
 
+function reportPushSetupIssue(code: string) {
+  const message = `[push] ${code}`;
+  console.error(message);
+  try {
+    void fetch(`${Capacitor.isNativePlatform() ? APP_URL : ""}/api/client-errors`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        url: window.location.pathname,
+        userAgent: navigator.userAgent,
+      }),
+    }).catch(() => {});
+  } catch {}
+}
+
 async function registerFcmToken(token: string, platform: "native" | "web" = "native") {
   try {
     const jwt = localStorage.getItem("fixgo_token");
-    if (!jwt) return;
-    await fetch(`${Capacitor.isNativePlatform() ? APP_URL : ""}/api/notifications/fcm-token`, {
+    if (!jwt) {
+      reportPushSetupIssue("token-save-skipped-no-session");
+      return;
+    }
+    const response = await fetch(`${Capacitor.isNativePlatform() ? APP_URL : ""}/api/notifications/fcm-token`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -16,7 +35,17 @@ async function registerFcmToken(token: string, platform: "native" | "web" = "nat
       },
       body: JSON.stringify({ token, platform }),
     });
-  } catch {}
+    if (!response.ok) {
+      reportPushSetupIssue(`token-save-http-${response.status}`);
+      return;
+    }
+    const result = await response.json().catch(() => null);
+    if (result?.firebaseConfigured === false) {
+      reportPushSetupIssue("server-firebase-not-configured");
+    }
+  } catch {
+    reportPushSetupIssue("token-save-network-error");
+  }
 }
 
 const INACTIVE_SERVICE_STATUSES = new Set(["completed", "cancelled"]);
@@ -100,12 +129,17 @@ export function usePushNotifications() {
               await registerFcmToken(token.value, "native");
             });
 
+            const errorHandler = await PushNotifications.addListener("registrationError", () => {
+              reportPushSetupIssue("native-registration-error");
+            });
+
             const actionHandler = await PushNotifications.addListener("pushNotificationActionPerformed", async (action) => {
               await navigateFromPushData(action.notification.data || {});
             });
 
             cleanup = () => {
               void regHandler.remove();
+              void errorHandler.remove();
               void actionHandler.remove();
             };
 
@@ -113,10 +147,16 @@ export function usePushNotifications() {
             // listeners ya están instalados para no perder eventos durante
             // el diálogo ni el token inicial.
             const permission = await PushNotifications.requestPermissions();
-            if (cancelled || permission.receive !== "granted") return;
+            if (cancelled) return;
+            if (permission.receive !== "granted") {
+              reportPushSetupIssue("native-notification-permission-not-granted");
+              return;
+            }
 
             await PushNotifications.register();
-          } catch {}
+          } catch {
+            reportPushSetupIssue("native-push-initialization-failed");
+          }
         })();
       }, NATIVE_PUSH_START_DELAY_MS);
 
@@ -130,7 +170,8 @@ export function usePushNotifications() {
     if (isWebPushConfigured()) {
       registerWebPush().then((token) => {
         if (token) registerFcmToken(token, "web");
-      });
+        else reportPushSetupIssue("web-token-unavailable");
+      }).catch(() => reportPushSetupIssue("web-registration-failed"));
 
       const onSwMessage = (event: MessageEvent) => {
         if (event.data?.type === "NOTIFICATION_CLICK" && event.data.link) {

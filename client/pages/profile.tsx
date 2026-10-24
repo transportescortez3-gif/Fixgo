@@ -258,11 +258,13 @@ export default function Profile() {
   const [portfolio, setPortfolio] = useState<any[]>([]);
   const [uploadingPortfolio, setUploadingPortfolio] = useState(false);
   const [portfolioCaption, setPortfolioCaption] = useState("");
+  const [pendingPortfolioFile, setPendingPortfolioFile] = useState<File | null>(null);
 
   const [certifications, setCertifications] = useState<any[]>([]);
   const [uploadingCert, setUploadingCert] = useState(false);
   const [certName, setCertName] = useState("");
   const [certIssuer, setCertIssuer] = useState("");
+  const [pendingCertFile, setPendingCertFile] = useState<File | null>(null);
 
   const fetchPortfolio = useCallback(async () => {
     if (!user?.id) return;
@@ -443,14 +445,17 @@ export default function Profile() {
     } catch { toast.error("Error al eliminar el video"); }
   };
 
-  const handlePortfolioUpload = async (fileOrEvent: File | React.ChangeEvent<HTMLInputElement>) => {
-    const file = fileOrEvent instanceof File ? fileOrEvent : fileOrEvent.target.files?.[0];
-    if (!file) return;
+  const selectPortfolioFile = (file: File) => {
     if (!file.type.startsWith("image/")) { toast.error("Solo se permiten imágenes"); return; }
     if (file.size > 10 * 1024 * 1024) { toast.error("Máximo 10MB"); return; }
+    setPendingPortfolioFile(file);
+  };
+
+  const savePortfolioWork = async () => {
+    if (!pendingPortfolioFile) { toast.error("Selecciona una foto antes de guardar"); return; }
     setUploadingPortfolio(true);
     try {
-      const imageUrl = await uploadFile(file);
+      const imageUrl = await uploadFile(pendingPortfolioFile);
       const token = localStorage.getItem("fixgo_token");
       const res = await fetch(`/api/portfolio`, {
         method: "POST",
@@ -458,9 +463,10 @@ export default function Profile() {
         body: JSON.stringify({ imageUrl, caption: portfolioCaption.trim() || null }),
       });
       if (!res.ok) throw new Error((await res.json()).error || "Error");
-      toast.success("Foto de portfolio subida");
+      await fetchPortfolio();
+      toast.success("Trabajo guardado");
+      setPendingPortfolioFile(null);
       setPortfolioCaption("");
-      fetchPortfolio();
     } catch (e: any) { toast.error(e.message); }
     finally { setUploadingPortfolio(false); }
   };
@@ -474,14 +480,19 @@ export default function Profile() {
     toast.success("Imagen eliminada");
   };
 
-  const handleCertUpload = async (fileOrEvent: File | React.ChangeEvent<HTMLInputElement>) => {
-    const file = fileOrEvent instanceof File ? fileOrEvent : fileOrEvent.target.files?.[0];
-    if (!file) return;
+  const selectCertFile = (file: File) => {
     if (!certName.trim()) { toast.error("Ingresa el nombre de la certificación primero"); return; }
+    if (!file.type.startsWith("image/")) { toast.error("Solo se permiten imágenes"); return; }
     if (file.size > 10 * 1024 * 1024) { toast.error("Máximo 10MB"); return; }
+    setPendingCertFile(file);
+  };
+
+  const saveCertification = async () => {
+    if (!certName.trim()) { toast.error("Ingresa el nombre de la certificación"); return; }
+    if (!pendingCertFile) { toast.error("Selecciona una imagen antes de guardar"); return; }
     setUploadingCert(true);
     try {
-      const imageUrl = await uploadFile(file);
+      const imageUrl = await uploadFile(pendingCertFile);
       const token = localStorage.getItem("fixgo_token");
       const res = await fetch(`/api/certifications`, {
         method: "POST",
@@ -489,9 +500,10 @@ export default function Profile() {
         body: JSON.stringify({ name: certName.trim(), issuer: certIssuer.trim() || null, imageUrl }),
       });
       if (!res.ok) throw new Error((await res.json()).error || "Error");
+      await fetchCertifications();
       toast.success("Certificación enviada para revisión");
+      setPendingCertFile(null);
       setCertName(""); setCertIssuer("");
-      fetchCertifications();
     } catch (e: any) { toast.error(e.message); }
     finally { setUploadingCert(false); }
   };
@@ -1332,7 +1344,7 @@ export default function Profile() {
                       </div>
                     ))}
                     {portfolio.length < 20 && (
-                      <PhotoPicker onFile={handlePortfolioUpload}>
+                      <PhotoPicker onFile={selectPortfolioFile}>
                         {(open) => (
                           <button
                             type="button"
@@ -1340,7 +1352,8 @@ export default function Profile() {
                             disabled={uploadingPortfolio}
                             className="aspect-square rounded-lg border-2 border-dashed border-muted-foreground/30 flex flex-col items-center justify-center gap-1 text-muted-foreground hover:border-primary hover:text-primary transition-colors disabled:opacity-50"
                           >
-                            {uploadingPortfolio ? <Loader2 className="w-5 h-5 animate-spin" /> : <><ImagePlus className="w-5 h-5" /><span className="text-[10px]">Añadir</span></>}
+                            <ImagePlus className="w-5 h-5" />
+                            <span className="text-[10px]">{pendingPortfolioFile ? "Cambiar foto" : "Añadir"}</span>
                           </button>
                         )}
                       </PhotoPicker>
@@ -1352,6 +1365,20 @@ export default function Profile() {
                     onChange={(e) => setPortfolioCaption(e.target.value)}
                     className="h-9 text-sm"
                   />
+                  {pendingPortfolioFile && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 p-2">
+                      <span className="min-w-0 truncate text-xs text-muted-foreground">{pendingPortfolioFile.name}</span>
+                      <div className="flex gap-2">
+                        <Button type="button" size="sm" variant="ghost" disabled={uploadingPortfolio} onClick={() => { setPendingPortfolioFile(null); setPortfolioCaption(""); }}>
+                          Cancelar
+                        </Button>
+                        <Button type="button" size="sm" disabled={uploadingPortfolio} onClick={savePortfolioWork}>
+                          {uploadingPortfolio ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                          Guardar trabajo
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </TabsContent>
 
                 <TabsContent value="certificados" className="space-y-3 pt-3">
@@ -1399,21 +1426,35 @@ export default function Profile() {
                         className="h-9 text-sm"
                       />
                     </div>
-                    <PhotoPicker onFile={handleCertUpload}>
+                    <PhotoPicker onFile={selectCertFile}>
                       {(open) => (
                         <Button
                           type="button"
                           variant="outline"
                           size="sm"
-                          disabled={uploadingCert || !certName.trim()}
+                          disabled={uploadingCert}
                           onClick={open}
                           className="w-full sm:w-auto"
                         >
-                          {uploadingCert ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
-                          Subir Certificado / Licencia
+                          <Upload className="w-4 h-4 mr-2" />
+                          {pendingCertFile ? "Cambiar imagen" : "Seleccionar certificado"}
                         </Button>
                       )}
                     </PhotoPicker>
+                    {pendingCertFile && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 p-2">
+                        <span className="min-w-0 truncate text-xs text-muted-foreground">{pendingCertFile.name}</span>
+                        <div className="flex gap-2">
+                          <Button type="button" size="sm" variant="ghost" disabled={uploadingCert} onClick={() => setPendingCertFile(null)}>
+                            Cancelar
+                          </Button>
+                          <Button type="button" size="sm" disabled={uploadingCert || !certName.trim()} onClick={saveCertification}>
+                            {uploadingCert ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                            Guardar certificado
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </TabsContent>
               </Tabs>

@@ -3,6 +3,7 @@ import { useLocation } from "wouter";
 import { ArrowRight, Check, CheckCircle2, Loader2, Zap, Star, Crown } from "lucide-react";
 import { useAllPlans, useSubscription, type SubscriptionPlan } from "@/hooks/use-subscription";
 import { useAuth } from "@/hooks/use-auth";
+import { toast } from "sonner";
 
 const CLP = (n: number) =>
   n === 0 ? "Gratis" : "$" + n.toLocaleString("es-CL") + " CLP";
@@ -59,11 +60,13 @@ function PlanCard({
   plan,
   isCurrent,
   isSelecting,
+  canSelectFree,
   onSelect,
 }: {
   plan: SubscriptionPlan;
   isCurrent: boolean;
   isSelecting: boolean;
+  canSelectFree: boolean;
   onSelect: () => void;
 }) {
   const meta = PLAN_META[plan.code] ?? { icon: <Zap size={22} />, color: "text-zinc-400" };
@@ -124,7 +127,7 @@ function PlanCard({
       </ul>
       <button
         onClick={onSelect}
-        disabled={isSelecting || (plan.priceClp === 0 && !isCurrent)}
+        disabled={isSelecting || (plan.priceClp === 0 && !isCurrent && !canSelectFree)}
         aria-pressed={isCurrent || isSelecting}
         className={`flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-bold transition ${
           isCurrent
@@ -145,10 +148,10 @@ function PlanCard({
         ) : isSelecting ? (
           <>
             <Loader2 size={17} className="animate-spin" />
-            Abriendo checkout…
+            {plan.priceClp === 0 ? "Activando plan gratuito…" : "Abriendo checkout…"}
           </>
         ) : plan.priceClp === 0 ? (
-          "Plan gratuito"
+          canSelectFree ? "Activar plan gratuito" : "Disponible al terminar tu plan"
         ) : (
           <>
             Elegir este plan
@@ -171,6 +174,7 @@ export default function PlanesPage() {
     plan: activePlan,
     isActive: subscriptionActive,
     isLoading: subscriptionLoading,
+    refetch: refetchSubscription,
   } = useSubscription();
   const [selectingPlanCode, setSelectingPlanCode] = useState<string | null>(null);
 
@@ -183,7 +187,7 @@ export default function PlanesPage() {
     (p) => p.role === tab && (p.priceClp === 0 ? p.interval === "monthly" : p.interval === interval)
   );
 
-  function handleSelect(plan: SubscriptionPlan) {
+  async function handleSelect(plan: SubscriptionPlan) {
     if (!user) {
       navigate("/login");
       return;
@@ -195,7 +199,26 @@ export default function PlanesPage() {
       navigate("/mi-plan");
       return;
     }
-    if (plan.priceClp === 0) return;
+    if (plan.priceClp === 0) {
+      setSelectingPlanCode(plan.code);
+      try {
+        const token = localStorage.getItem("fixgo_token");
+        const res = await fetch("/api/subscriptions/free", {
+          method: "POST",
+          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || "No se pudo activar el plan gratuito");
+        await refetchSubscription();
+        toast.success("Plan gratuito activado");
+        navigate("/mi-plan");
+      } catch (error: any) {
+        toast.error(error?.message || "No se pudo activar el plan gratuito");
+      } finally {
+        setSelectingPlanCode(null);
+      }
+      return;
+    }
     setSelectingPlanCode(plan.code);
     window.setTimeout(() => navigate(`/checkout/${plan.code}`), 250);
   }
@@ -292,6 +315,7 @@ export default function PlanesPage() {
                   (activePlan?.code === plan.code || subscription?.planCode === plan.code)
                 )}
                 isSelecting={selectingPlanCode === plan.code}
+                canSelectFree={!subscriptionActive || !subscription}
                 onSelect={() => handleSelect(plan)}
               />
             ))}

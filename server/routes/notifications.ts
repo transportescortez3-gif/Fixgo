@@ -77,9 +77,9 @@ router.post("/notifications/fcm-token", authenticate, async (req: AuthRequest, r
     .set(platform === "web" ? { fcmTokenWeb: token } : { fcmToken: token })
     .where(eq(usersTable.id, req.userId!));
 
-  getFirebaseApp();
+  const firebaseConfigured = Boolean(getFirebaseApp());
 
-  res.json({ ok: true });
+  res.json({ ok: true, firebaseConfigured });
 });
 
 router.delete("/notifications/fcm-token", authenticate, async (req: AuthRequest, res): Promise<void> => {

@@ -17,6 +17,7 @@ interface WorkerOnboardingProps {
     avatarUrl?: string | null;
     bio?: string | null;
     skills?: string | null;
+    categoryId?: number | null;
     serviceRadius?: number | null;
     kycStatus?: string | null;
     lat?: number | null;
@@ -50,7 +51,7 @@ export default function WorkerOnboarding({ user }: WorkerOnboardingProps) {
       label: "Habilidades y especialidades",
       description: "Agrega tus oficios y servicios que ofreces.",
       href: "/profile",
-      done: !!(user.skills && user.skills.trim().length > 0),
+      done: !!(user.categoryId || (user.skills && user.skills.trim().length > 0)),
     },
     {
       id: "location",

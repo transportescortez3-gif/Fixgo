@@ -58,7 +58,8 @@ router.post("/auth/register", async (req, res): Promise<void> => {
     await db.insert(workerCategoriesTable).values(rows).onConflictDoNothing();
   }
 
-  // Toda cuenta nueva recibe un mes de prueba del nivel superior de su rol.
+  // Las cuentas nuevas de expertos reciben 15 días de Pro+; las cuentas de
+  // cliente conservan su mes de prueba. Al vencer, el cron aplica el plan gratis.
   // No se cobra durante el trial y la ruta de suscripciones lo degrada al plan
   // gratuito correspondiente cuando vence.
   try {
@@ -74,7 +75,7 @@ router.post("/auth/register", async (req, res): Promise<void> => {
 
     if (trialPlan) {
       const trialEndsAt = new Date();
-      trialEndsAt.setDate(trialEndsAt.getDate() + 30);
+      trialEndsAt.setDate(trialEndsAt.getDate() + (role === "worker" ? 15 : 30));
       await db.insert(userSubscriptionsTable).values({
         userId: user.id,
         planCode: trialPlan.code,

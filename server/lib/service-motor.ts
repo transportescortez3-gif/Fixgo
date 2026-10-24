@@ -213,6 +213,13 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
     totalSeconds: remainingSeconds,
     budgetNote: phase === "promax" ? (dispatch.budgetNote ?? null) : null,
   });
+  logger.info({
+    serviceId: dispatch.serviceId,
+    workerId,
+    deliveryId: dispatch.deliveryId,
+    phase,
+    expiresAt: dispatch.expiresAt,
+  }, "motor: active alert socket emit attempted");
 
   const distText = distanceKm !== null ? ` — ${distanceKm} km` : "";
   createNotification({
@@ -224,7 +231,12 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
     highPriority: true,
     deliveryId: dispatch.deliveryId,
     alertExpiresAt: dispatch.expiresAt,
-  }).catch((error) => logger.error({ err: error }, "push service_request error"));
+  }).catch((error) => logger.error({
+    err: error,
+    serviceId: dispatch.serviceId,
+    workerId,
+    deliveryId: dispatch.deliveryId,
+  }, "push service_request error"));
 
   const key = timerKey(dispatch.serviceId, workerId);
   const previousTimer = alertTimers.get(key);
@@ -721,6 +733,12 @@ async function launchCombinedActivePhase(
       const db2 = b.distKm ?? 9999;
       return da - db2;
     });
+
+  logger.info({
+    serviceId,
+    eligibleWorkers: allEligible.length,
+    excludedByRadius: allEligible.length - rankedCandidates.length,
+  }, "motor: radius filter diagnostics");
 
   const { proMaxWorkers, nearbyWorkers } = splitAlertRecipients(
     rankedCandidates,

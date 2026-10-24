@@ -12,6 +12,12 @@ export async function createNotification(data: InsertNotification & {
 }): Promise<void> {
   const { highPriority, deliveryId, alertExpiresAt, ...dbData } = data;
   await db.insert(notificationsTable).values(dbData);
+  logger.info({
+    userId: data.userId,
+    type: data.type,
+    relatedId: data.relatedId ?? null,
+    highPriority: highPriority ?? false,
+  }, "notification persisted");
 
   emitToUser(data.userId, "new_notification", {
     type: data.type,
@@ -44,10 +50,17 @@ export async function createNotification(data: InsertNotification & {
       ? { ...pushData, alertExpiresAt: typeof alertExpiresAt === "string" ? alertExpiresAt : alertExpiresAt.toISOString() }
       : pushData;
 
-    await Promise.all(tokens.map(token =>
+    const results = await Promise.all(tokens.map(token =>
       sendPushNotification(token, data.title, data.message, pushData, highPriority ?? false, androidData)
     ));
-    logger.info({ userId: data.userId, type: data.type, highPriority }, "push: sent ok");
+    const acceptedByFcm = results.filter(Boolean).length;
+    logger.info({
+      userId: data.userId,
+      type: data.type,
+      highPriority,
+      acceptedTokens: acceptedByFcm,
+      attemptedTokens: tokens.length,
+    }, acceptedByFcm > 0 ? "push: accepted by FCM" : "push: not accepted by FCM");
   } catch (err) {
     logger.error({ err, userId: data.userId, type: data.type }, "push: FCM send error");
   }
@@ -87,10 +100,16 @@ export async function createNotifications(items: (InsertNotification & { highPri
           type: data.type,
           ...(data.targetRole ? { targetRole: data.targetRole } : {}),
         };
-        await Promise.all(tokens.map(token =>
+        const results = await Promise.all(tokens.map(token =>
           sendPushNotification(token, data.title, data.message, pushData, data.highPriority ?? false)
         ));
-        logger.info({ userId: data.userId, type: data.type }, "push(bulk): sent ok");
+        const acceptedByFcm = results.filter(Boolean).length;
+        logger.info({
+          userId: data.userId,
+          type: data.type,
+          acceptedTokens: acceptedByFcm,
+          attemptedTokens: tokens.length,
+        }, acceptedByFcm > 0 ? "push(bulk): accepted by FCM" : "push(bulk): not accepted by FCM");
       } catch (err) {
         logger.error({ err, userId: data.userId, type: data.type }, "push(bulk): FCM send error");
       }

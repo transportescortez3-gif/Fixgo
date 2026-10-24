@@ -131,30 +131,39 @@ router.get("/subscriptions/me", authenticate, async (req: AuthRequest, res): Pro
       // Fallback para cuentas antiguas creadas antes del trial automático.
       try {
         const userRows = await db.select({ role: usersTable.role }).from(usersTable).where(eq(usersTable.id, userId)).limit(1);
-        const role = userRows[0]?.role ?? "client";
-        const planCode = role === "worker" ? "pro_free" : "client_free";
-        const freePlanRows = await db.select().from(subscriptionPlansTable).where(and(eq(subscriptionPlansTable.code, planCode), eq(subscriptionPlansTable.isActive, true))).limit(1);
-        if (freePlanRows.length > 0) {
-          const periodStart = new Date();
-          const periodEnd = new Date();
-          periodEnd.setMonth(periodEnd.getMonth() + 1);
-          const [newSub] = await db.insert(userSubscriptionsTable).values({
-            userId,
-            planCode,
-            status: "active",
-            interval: "monthly",
-            pricePaidClp: 0,
-            trialEndsAt: null,
-            currentPeriodStart: periodStart,
-            currentPeriodEnd: periodEnd,
-          }).returning();
-          res.json({ subscription: newSub, plan: freePlanRows[0] });
+        if (!userRows[0]) {
+          res.status(404).json({ error: "Cuenta no encontrada" });
           return;
         }
+        const role = userRows[0].role;
+        const planCode = role === "worker" ? "pro_free" : "client_free";
+        const freePlanRows = await db.select().from(subscriptionPlansTable).where(and(eq(subscriptionPlansTable.code, planCode), eq(subscriptionPlansTable.isActive, true))).limit(1);
+        if (freePlanRows.length === 0) {
+          logger.error({ userId, planCode }, "Free plan missing for subscription fallback");
+          res.status(503).json({ error: "El plan gratuito no está disponible. Intenta nuevamente más tarde." });
+          return;
+        }
+        const periodStart = new Date();
+        const periodEnd = new Date();
+        periodEnd.setMonth(periodEnd.getMonth() + 1);
+        const [newSub] = await db.insert(userSubscriptionsTable).values({
+          userId,
+          planCode,
+          status: "active",
+          interval: "monthly",
+          pricePaidClp: 0,
+          trialEndsAt: null,
+          currentPeriodStart: periodStart,
+          currentPeriodEnd: periodEnd,
+        }).returning();
+        res.json({ subscription: newSub, plan: freePlanRows[0] });
+        return;
       } catch (trialErr) {
-        logger.warn(trialErr, "No se pudo crear trial automático");
+        logger.error({ err: trialErr, userId }, "Could not activate fallback free plan");
+        res.status(500).json({ error: "No se pudo activar el plan gratuito" });
+        return;
       }
-      res.json({ subscription: null });
+      res.status(503).json({ error: "No se pudo asignar un plan a esta cuenta" });
       return;
     }
 
@@ -230,6 +239,94 @@ router.get("/subscriptions/me", authenticate, async (req: AuthRequest, res): Pro
   } catch (err) {
     logger.error(err, "subscriptions/me error");
     res.status(500).json({ error: "Error al obtener suscripción" });
+  }
+});
+
+// ─── POST /api/subscriptions/free ────────────────────────────────────────────
+// Permite activar el plan gratuito cuando la cuenta no tiene un plan activo.
+router.post("/subscriptions/free", authenticate, async (req: AuthRequest, res): Promise<void> => {
+  const userId = req.userId!;
+  try {
+    const result = await db.transaction(async (tx) => {
+      const [account] = await tx
+        .select({ role: usersTable.role })
+        .from(usersTable)
+        .where(eq(usersTable.id, userId))
+        .for("update")
+        .limit(1);
+      if (!account) return { kind: "missing-user" as const };
+
+      const planCode = account.role === "worker" ? "pro_free" : "client_free";
+      const [plan] = await tx
+        .select()
+        .from(subscriptionPlansTable)
+        .where(and(eq(subscriptionPlansTable.code, planCode), eq(subscriptionPlansTable.isActive, true)))
+        .limit(1);
+      if (!plan) return { kind: "missing-plan" as const, planCode };
+
+      const [current] = await tx
+        .select()
+        .from(userSubscriptionsTable)
+        .where(and(
+          eq(userSubscriptionsTable.userId, userId),
+          sql`${userSubscriptionsTable.status} IN ('active','trialing')`,
+        ))
+        .orderBy(desc(userSubscriptionsTable.createdAt))
+        .limit(1)
+        .for("update");
+      if (current && current.planCode !== planCode) {
+        return { kind: "has-current-plan" as const, planCode: current.planCode };
+      }
+      if (current) return { kind: "ok" as const, subscription: current, plan };
+
+      const start = new Date();
+      const end = new Date(start);
+      end.setMonth(end.getMonth() + 1);
+      const [previous] = await tx
+        .select({ id: userSubscriptionsTable.id })
+        .from(userSubscriptionsTable)
+        .where(eq(userSubscriptionsTable.userId, userId))
+        .orderBy(desc(userSubscriptionsTable.createdAt))
+        .limit(1)
+        .for("update");
+
+      const values = {
+        planCode,
+        status: "active" as const,
+        interval: "monthly" as const,
+        pricePaidClp: 0,
+        trialEndsAt: null,
+        currentPeriodStart: start,
+        currentPeriodEnd: end,
+        cancelledAt: null,
+        updatedAt: start,
+      };
+      const [subscription] = previous
+        ? await tx.update(userSubscriptionsTable).set(values).where(eq(userSubscriptionsTable.id, previous.id)).returning()
+        : await tx.insert(userSubscriptionsTable).values({ ...values, userId }).returning();
+      return { kind: "ok" as const, subscription, plan };
+    });
+
+    if (result.kind === "missing-user") {
+      res.status(404).json({ error: "Cuenta no encontrada" });
+      return;
+    }
+    if (result.kind === "missing-plan") {
+      logger.error({ userId, planCode: result.planCode }, "Free plan missing during explicit activation");
+      res.status(503).json({ error: "El plan gratuito no está disponible. Intenta nuevamente más tarde." });
+      return;
+    }
+    if (result.kind === "has-current-plan") {
+      res.status(409).json({
+        error: "Ya tienes un plan activo. Tu prueba Pro+ pasará al plan gratuito al vencer.",
+        planCode: result.planCode,
+      });
+      return;
+    }
+    res.json({ subscription: result.subscription, plan: result.plan });
+  } catch (err) {
+    logger.error({ err, userId }, "subscriptions/free activation error");
+    res.status(500).json({ error: "No se pudo activar el plan gratuito" });
   }
 });
 
