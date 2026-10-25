@@ -6,6 +6,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.WindowManager;
+import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 
@@ -71,11 +72,22 @@ public class ServiceRequestAlertActivity extends AppCompatActivity {
 
         ServiceRequestOverlay.hideVisible(this, alert.deliveryId);
         TextView summary = findViewById(R.id.service_request_summary);
+        TextView phaseView = findViewById(R.id.service_request_phase);
+        TextView budgetView = findViewById(R.id.service_request_budget);
         expiryView = findViewById(R.id.service_request_expiry);
         Button viewButton = findViewById(R.id.service_request_view);
         Button closeButton = findViewById(R.id.service_request_close);
 
+        boolean isProMax = alert.phase.equals("promax");
+        phaseView.setText(isProMax ? "PARA LOS PRO MAX" : "PARA PRO Y GRATIS");
+        phaseView.setTextColor(isProMax ? 0xFFF59E0B : 0xFF1A8CF8);
         summary.setText(alert.body);
+        if (isProMax && !alert.budgetNote.isEmpty()) {
+            budgetView.setText("Precio sugerido del cliente: " + alert.budgetNote);
+            budgetView.setVisibility(View.VISIBLE);
+        } else {
+            budgetView.setVisibility(View.GONE);
+        }
         viewButton.setOnClickListener(v -> openRequest());
         closeButton.setOnClickListener(v -> closeAlert());
         startExpiryTicker();

@@ -17,12 +17,16 @@ public final class ServiceRequestAlert {
     public static final String EXTRA_SERVICE_ID = "serviceRequestServiceId";
     public static final String EXTRA_TITLE = "serviceRequestTitle";
     public static final String EXTRA_BODY = "serviceRequestBody";
+    public static final String EXTRA_PHASE = "serviceRequestPhase";
+    public static final String EXTRA_BUDGET_NOTE = "serviceRequestBudgetNote";
     public static final String EXTRA_EXPIRES_AT = "serviceRequestExpiresAt";
 
     public final String deliveryId;
     public final String serviceId;
     public final String title;
     public final String body;
+    public final String phase;
+    public final String budgetNote;
     public final long expiresAt;
 
     private ServiceRequestAlert(
@@ -30,11 +34,15 @@ public final class ServiceRequestAlert {
             String serviceId,
             String title,
             String body,
+            String phase,
+            String budgetNote,
             long expiresAt) {
         this.deliveryId = deliveryId;
         this.serviceId = serviceId;
         this.title = title;
         this.body = body;
+        this.phase = phase;
+        this.budgetNote = budgetNote;
         this.expiresAt = expiresAt;
     }
 
@@ -53,8 +61,10 @@ public final class ServiceRequestAlert {
 
         String body = clean(data.get("body"));
         if (body.isEmpty()) body = "Hay una nueva solicitud disponible";
+        String phase = "promax".equals(clean(data.get("phase"))) ? "promax" : "nearby";
+        String budgetNote = phase.equals("promax") ? clean(data.get("budgetNote")) : "";
 
-        return new ServiceRequestAlert(deliveryId, serviceId, title, body, expiresAt);
+        return new ServiceRequestAlert(deliveryId, serviceId, title, body, phase, budgetNote, expiresAt);
     }
 
     public static ServiceRequestAlert fromIntent(Intent intent) {
@@ -68,7 +78,11 @@ public final class ServiceRequestAlert {
         if (title.isEmpty()) title = "Nueva solicitud de trabajo";
         String body = clean(intent.getStringExtra(EXTRA_BODY));
         if (body.isEmpty()) body = "Hay una nueva solicitud disponible";
-        return new ServiceRequestAlert(deliveryId, serviceId, title, body, expiresAt);
+        String phase = "promax".equals(clean(intent.getStringExtra(EXTRA_PHASE))) ? "promax" : "nearby";
+        String budgetNote = phase.equals("promax")
+                ? clean(intent.getStringExtra(EXTRA_BUDGET_NOTE))
+                : "";
+        return new ServiceRequestAlert(deliveryId, serviceId, title, body, phase, budgetNote, expiresAt);
     }
 
     public Intent createActivityIntent(Context context) {
@@ -79,6 +93,8 @@ public final class ServiceRequestAlert {
         intent.putExtra(EXTRA_SERVICE_ID, serviceId);
         intent.putExtra(EXTRA_TITLE, title);
         intent.putExtra(EXTRA_BODY, body);
+        intent.putExtra(EXTRA_PHASE, phase);
+        intent.putExtra(EXTRA_BUDGET_NOTE, budgetNote);
         intent.putExtra(EXTRA_EXPIRES_AT, expiresAt);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         return intent;
@@ -95,6 +111,12 @@ public final class ServiceRequestAlert {
 
     public long remainingMillis() {
         return Math.max(0L, expiresAt - System.currentTimeMillis());
+    }
+
+    public String notificationBody() {
+        return phase.equals("promax") && !budgetNote.isEmpty()
+                ? body + "\nPrecio sugerido: " + budgetNote
+                : body;
     }
 
     private static long parseIsoDate(String value) {

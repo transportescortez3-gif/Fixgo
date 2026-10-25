@@ -23,17 +23,20 @@ import java.util.Map;
 /**
  * Servicio FCM de Fixgo. Extiende el servicio del plugin Capacitor para que los
  * push normales sigan funcionando (notificaciones de chat, propuestas, etc.) y
- * sólo intercepta los mensajes data-only de llamada:
+ * maneja las alertas nativas de llamadas y solicitudes de trabajo:
  *
  *   - type == "incoming_call" → muestra la pantalla de llamada entrante a
  *     pantalla completa (IncomingCallActivity) aunque la app esté cerrada.
  *   - type == "cancel_call"   → cierra esa pantalla (el que llama colgó/contestó).
+ *   - type == "service_request" → publica un heads-up al estar en primer plano
+ *     y usa las superficies nativas temporizadas en segundo plano.
  *
  * Cualquier otro mensaje se delega a super.onMessageReceived (Capacitor).
  */
 public class FixxerMessagingService extends MessagingService {
 
     public static final String CALL_CHANNEL_ID   = "fixxer_calls";
+    public static final String DEFAULT_CHANNEL_ID = "fixxer_default";
     public static final String URGENT_CHANNEL_ID = "fixxer_urgent";
     public static final String SERVICE_ALERT_CHANNEL_ID = "fixgo_service_alerts_v2";
     public static final String SERVICE_OVERLAY_CHANNEL_ID = "fixgo_service_overlay_silent_v1";
@@ -42,6 +45,50 @@ public class FixxerMessagingService extends MessagingService {
     public static final int SERVICE_ALERT_NOTIFICATION_ID = 4244;
     public static final int SERVICE_OVERLAY_NOTIFICATION_ID = 4245;
     public static final int SERVICE_REQUEST_NOTIFICATION_ID = 4246;
+
+    /** Called at app startup so FCM's channel IDs exist before background delivery. */
+    public static void ensureGeneralNotificationChannels(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationManager nm =
+                (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        createGeneralChannelIfMissing(
+                nm,
+                DEFAULT_CHANNEL_ID,
+                "Notificaciones de Fixgo",
+                "Mensajes y actualizaciones de tus solicitudes",
+                RingtoneManager.TYPE_NOTIFICATION);
+        createGeneralChannelIfMissing(
+                nm,
+                URGENT_CHANNEL_ID,
+                "Alertas importantes de Fixgo",
+                "Avisos urgentes de solicitudes y actividad",
+                RingtoneManager.TYPE_ALARM);
+    }
+
+    private static void createGeneralChannelIfMissing(
+            NotificationManager nm,
+            String channelId,
+            String name,
+            String description,
+            int soundType) {
+        if (nm.getNotificationChannel(channelId) != null) return;
+        NotificationChannel channel = new NotificationChannel(
+                channelId, name, NotificationManager.IMPORTANCE_HIGH);
+        channel.setDescription(description);
+        channel.enableVibration(true);
+        channel.setVibrationPattern(new long[]{0, 350, 150, 350});
+        channel.setLockscreenVisibility(Notification.VISIBILITY_PRIVATE);
+        Uri sound = RingtoneManager.getDefaultUri(soundType);
+        AudioAttributes attrs = new AudioAttributes.Builder()
+                .setUsage(soundType == RingtoneManager.TYPE_ALARM
+                        ? AudioAttributes.USAGE_ALARM
+                        : AudioAttributes.USAGE_NOTIFICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build();
+        channel.setSound(sound, attrs);
+        nm.createNotificationChannel(channel);
+    }
 
     @Override
     public void onMessageReceived(@NonNull RemoteMessage remoteMessage) {
@@ -61,10 +108,6 @@ public class FixxerMessagingService extends MessagingService {
         // En segundo plano, service_request usa sus superficies nativas; no
         // delegar el mismo aviso al plugin después de publicarlo.
         if ("service_request".equals(type)) {
-            if (MainActivity.isInForeground) {
-                super.onMessageReceived(remoteMessage);
-                return;
-            }
             ServiceRequestAlert alert = ServiceRequestAlert.fromData(data);
             if (alert == null) {
                 // Compatibilidad con mensajes de servidores anteriores que aún
@@ -75,6 +118,14 @@ public class FixxerMessagingService extends MessagingService {
             }
             if (alert.remainingMillis() <= 0L) {
                 ServiceRequestAlertController.expire(this, alert.deliveryId);
+                return;
+            }
+            if (MainActivity.isInForeground) {
+                // FCM data-only no publica por sí solo un heads-up cuando la
+                // app está abierta. Mostrar el aviso Android y delegar además
+                // al plugin para conservar el evento que escucha el cliente.
+                showServiceAlertNotification(remoteMessage);
+                super.onMessageReceived(remoteMessage);
                 return;
             }
             createServiceAlertChannel();

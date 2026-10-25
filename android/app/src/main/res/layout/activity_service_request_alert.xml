@@ -31,8 +31,9 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="26dp"
-            android:text="NUEVA SOLICITUD"
-            android:textColor="#AAB4C8"
+            android:id="@+id/service_request_phase"
+            android:text="PARA PRO Y GRATIS"
+            android:textColor="#1A8CF8"
             android:textSize="13sp" />
 
         <TextView
@@ -47,6 +48,17 @@
             android:textColor="#F7F8FA"
             android:textSize="28sp"
             android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/service_request_budget"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:gravity="center"
+            android:textColor="#FBBF24"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/service_request_expiry"

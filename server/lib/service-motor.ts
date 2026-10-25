@@ -7,6 +7,7 @@ import { createNotification, createNotifications } from "./createNotification";
 import { logger } from "./logger";
 import {
   NEARBY_DELAY_MS,
+  resolveLatestWorkerPlans,
   splitAlertRecipients,
 } from "./alert-recipient-selection";
 import { isWorkerPayoutComplete } from "./worker-eligibility";
@@ -673,24 +674,26 @@ async function launchCombinedActivePhase(
   const workerPlanRows = await db
     .select({
       userId: userSubscriptionsTable.userId,
+      id: userSubscriptionsTable.id,
       planCode: userSubscriptionsTable.planCode,
       features: subscriptionPlansTable.features,
+      createdAt: userSubscriptionsTable.createdAt,
     })
     .from(userSubscriptionsTable)
     .innerJoin(subscriptionPlansTable, eq(userSubscriptionsTable.planCode, subscriptionPlansTable.code))
     .where(and(
       sql`${userSubscriptionsTable.status} IN ('active','trialing')`,
     ));
-  const workerPlans = new Map(workerPlanRows.map(row => [row.userId, {
-    planCode: row.planCode,
+  const workerPlans = resolveLatestWorkerPlans(workerPlanRows.map(row => ({
+    ...row,
     features: (row.features ?? {}) as Record<string, unknown>,
-  }]));
+  })));
 
   logger.info({
     serviceId,
     categoryId: service.categoryId,
     hasCoords,
-    proMaxCount: workerPlanRows.filter(row => PROMAX_PLAN_CODES.includes(row.planCode)).length,
+    proMaxCount: [...workerPlans.values()].filter(plan => PROMAX_PLAN_CODES.includes(plan.planCode)).length,
   }, "motor: launching active phase");
 
   // Obtener todos los workers disponibles de la misma categoría, sin cooldown
@@ -699,17 +702,9 @@ async function launchCombinedActivePhase(
       id: usersTable.id,
       lat: usersTable.lat,
       lng: usersTable.lng,
-      alertRadiusKm: usersTable.alertRadiusKm,
-      planCode: userSubscriptionsTable.planCode,
-      planFeatures: subscriptionPlansTable.features,
     })
     .from(usersTable)
     .innerJoin(workerCategoriesTable, eq(workerCategoriesTable.workerId, usersTable.id))
-    .leftJoin(userSubscriptionsTable, and(
-      eq(userSubscriptionsTable.userId, usersTable.id),
-      sql`${userSubscriptionsTable.status} IN ('active','trialing')`,
-    ))
-    .leftJoin(subscriptionPlansTable, eq(userSubscriptionsTable.planCode, subscriptionPlansTable.code))
     .where(and(
       eq(usersTable.role, "worker"),
       eq(usersTable.isAvailable, true),

@@ -20,6 +20,7 @@ const BASE_URL = process.env.SERVICE_ALERT_E2E_BASE_URL
 const PREFIX = `service-alert-e2e-${Date.now()}-${process.pid}`;
 const PROMAX_PLAN = "pro_plus_monthly";
 const PRO_PLAN = "pro_monthly";
+const FREE_PLAN = "pro_free";
 const NEARBY_DELAY_MS = 10_000;
 const MAX_ALERT_WAIT_MS = 18_000;
 
@@ -159,10 +160,11 @@ async function main(): Promise<void> {
 
   const planRows = await db.select({
     code: subscriptionPlansTable.code,
-  }).from(subscriptionPlansTable).where(inArray(subscriptionPlansTable.code, [PROMAX_PLAN, PRO_PLAN]));
+  }).from(subscriptionPlansTable).where(inArray(subscriptionPlansTable.code, [PROMAX_PLAN, PRO_PLAN, FREE_PLAN]));
   const availablePlans = new Set(planRows.map((row) => row.code));
   assert.ok(availablePlans.has(PROMAX_PLAN), `subscription plan ${PROMAX_PLAN} is missing`);
   assert.ok(availablePlans.has(PRO_PLAN), `subscription plan ${PRO_PLAN} is missing`);
+  assert.ok(availablePlans.has(FREE_PLAN), `subscription plan ${FREE_PLAN} is missing`);
 
   const client = await createAccount("Cliente de prueba de alertas", "client", 0);
   const proMax = await createAccount("Experto Pro Max de prueba", "worker", 1);
@@ -180,6 +182,8 @@ async function main(): Promise<void> {
 
   const periodStart = new Date();
   const periodEnd = new Date(periodStart.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const olderPeriodStart = new Date(periodStart.getTime() - 60_000);
+  const olderPeriodEnd = new Date(periodEnd.getTime() - 60_000);
   await db.insert(userSubscriptionsTable).values([
     {
       userId: proMax.id,
@@ -188,6 +192,16 @@ async function main(): Promise<void> {
       interval: "monthly",
       currentPeriodStart: periodStart,
       currentPeriodEnd: periodEnd,
+      createdAt: periodStart,
+    },
+    {
+      userId: proMax.id,
+      planCode: FREE_PLAN,
+      status: "active",
+      interval: "monthly",
+      currentPeriodStart: olderPeriodStart,
+      currentPeriodEnd: olderPeriodEnd,
+      createdAt: olderPeriodStart,
     },
     {
       userId: pro.id,

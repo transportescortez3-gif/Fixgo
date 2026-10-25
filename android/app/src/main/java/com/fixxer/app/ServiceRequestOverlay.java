@@ -143,11 +143,17 @@ public final class ServiceRequestOverlay {
         GradientDrawable background = new GradientDrawable();
         background.setColor(0xFF111827);
         background.setCornerRadius(dp(context, 22));
-        background.setStroke(dp(context, 1), 0xFF34425B);
+        int accentColor = alert.phase.equals("promax") ? 0xFFF59E0B : 0xFF1A8CF8;
+        background.setStroke(dp(context, 2), accentColor);
         card.setBackground(background);
         card.setContentDescription("Nueva solicitud de trabajo");
 
-        TextView heading = text(context, "NUEVA SOLICITUD", 12, 0xFF8FA8FF, true);
+        TextView heading = text(
+                context,
+                alert.phase.equals("promax") ? "PARA LOS PRO MAX" : "PARA PRO Y GRATIS",
+                12,
+                accentColor,
+                true);
         heading.setLetterSpacing(0.08f);
         card.addView(heading);
 
@@ -157,6 +163,20 @@ public final class ServiceRequestOverlay {
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         summaryParams.topMargin = dp(context, 8);
         card.addView(summary, summaryParams);
+
+        if (alert.phase.equals("promax") && !alert.budgetNote.isEmpty()) {
+            TextView budget = text(
+                    context,
+                    "Precio sugerido del cliente: " + alert.budgetNote,
+                    15,
+                    0xFFFBBF24,
+                    true);
+            LinearLayout.LayoutParams budgetParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            budgetParams.topMargin = dp(context, 10);
+            card.addView(budget, budgetParams);
+        }
 
         countdownView = text(context, "", 13, 0xFFB7C0D2, false);
         LinearLayout.LayoutParams countdownParams = new LinearLayout.LayoutParams(

@@ -58,6 +58,7 @@ public class MainActivity extends BridgeActivity {
 
         registerPlugin(ServiceRequestAlertsPlugin.class);
         super.onCreate(savedInstanceState);
+        FixxerMessagingService.ensureGeneralNotificationChannels(this);
         if (BuildConfig.DEBUG) {
             WebView.setWebContentsDebuggingEnabled(true);
         }
