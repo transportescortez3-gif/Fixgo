@@ -39,7 +39,7 @@ interface ExpiredAlertEvent {
 interface TestAccount {
   id: number;
   email: string;
-  role: "client" | "worker";
+  role: "client" | "worker" | "admin";
   name: string;
 }
 
@@ -81,8 +81,8 @@ async function createAccount(
     status: "active",
     emailVerified: true,
     phoneVerified: true,
-    kycStatus: role === "worker" ? "approved" : "not_submitted",
-    isAvailable: role === "worker",
+    kycStatus: role === "client" ? "not_submitted" : "approved",
+    isAvailable: role !== "client",
   }).returning({ id: usersTable.id });
 
   const result = { id: account.id, email, role, name };
@@ -92,14 +92,23 @@ async function createAccount(
   return result;
 }
 
-async function connectWorker(worker: TestAccount): Promise<Socket> {
+async function connectWorker(
+  worker: TestAccount,
+  activeRole: "client" | "worker" | "admin" = worker.role,
+  originalRole?: "admin",
+): Promise<Socket> {
   const socket = io(BASE_URL, {
     path: "/socket.io",
     transports: ["websocket", "polling"],
     autoConnect: false,
     reconnection: false,
     auth: {
-      token: signToken({ id: worker.id, email: worker.email, role: worker.role }),
+      token: signToken({
+        id: worker.id,
+        email: worker.email,
+        role: activeRole,
+        ...(originalRole ? { originalRole } : {}),
+      }),
     },
   });
   sockets.push(socket);
@@ -126,7 +135,7 @@ async function connectWorker(worker: TestAccount): Promise<Socket> {
 }
 
 async function cleanup(): Promise<void> {
-  const workerIds = accounts.filter((account) => account.role === "worker").map((account) => account.id);
+  const workerIds = accounts.filter((account) => account.role !== "client").map((account) => account.id);
   const accountIds = accounts.map((account) => account.id);
   const clientIds = accounts.filter((account) => account.role === "client").map((account) => account.id);
   const fixtureServices = clientIds.length
@@ -650,7 +659,92 @@ async function main(): Promise<void> {
   assert.equal(timeoutQueuedSlots[0]?.serviceId, timeoutQueuedServiceId);
   assert.equal(timeoutQueuedSlots[0]?.state, "pending");
 
-  console.log("Service alert real-time flow passed: tier timing and recovery, FIFO queue behavior, and single delivery after an unanswered alert times out.");
+  const switchedAdmin = await createAccount("Admin en modo experto de prueba", "admin", 4);
+  const adminModeOff = await createAccount("Admin fuera del modo experto de prueba", "admin", 5);
+  const unavailableAdmin = await createAccount("Admin experto no disponible de prueba", "admin", 6);
+  for (const admin of [switchedAdmin, adminModeOff, unavailableAdmin]) {
+    await db.insert(workerCategoriesTable).values({
+      workerId: admin.id,
+      categoryId: category.id,
+      isPrimary: true,
+    });
+    await db.insert(userSubscriptionsTable).values({
+      userId: admin.id,
+      planCode: PROMAX_PLAN,
+      status: "active",
+      interval: "monthly",
+      currentPeriodStart: periodStart,
+      currentPeriodEnd: periodEnd,
+    });
+  }
+  await db.update(usersTable).set({ isAvailable: false }).where(eq(usersTable.id, unavailableAdmin.id));
+
+  socketsByWorker.set(switchedAdmin.id, await connectWorker(switchedAdmin, "worker", "admin"));
+  socketsByWorker.set(adminModeOff.id, await connectWorker(adminModeOff, "admin"));
+  socketsByWorker.set(unavailableAdmin.id, await connectWorker(unavailableAdmin, "worker", "admin"));
+  const adminModeResponse = await fetch(`${BASE_URL}/api/services`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${signToken({ id: client.id, email: client.email, role: client.role })}`,
+    },
+    body: JSON.stringify({
+      title: `${PREFIX}: alerta a administrador en modo experto`,
+      description: "Solicitud temporal para verificar el rol activo de un administrador.",
+      categoryId: category.id,
+      address: "Dirección de prueba",
+      paymentMethod: "cash",
+      budgetNote: "Presupuesto visible para el experto activo",
+    }),
+  });
+  const adminModeText = await adminModeResponse.text();
+  assert.equal(
+    adminModeResponse.status,
+    201,
+    `admin-mode service creation failed: ${adminModeResponse.status} ${adminModeText}`,
+  );
+  const adminModeCreated = JSON.parse(adminModeText) as { id?: number; service?: { id?: number } };
+  const adminModeServiceId = adminModeCreated.id ?? adminModeCreated.service?.id;
+  assert.ok(adminModeServiceId, "admin-mode service response must include its ID");
+  serviceIds.push(adminModeServiceId);
+
+  await waitUntil(
+    () => eventsByWorker.get(switchedAdmin.id)?.some((event) => event.serviceId === adminModeServiceId) ?? false,
+    6_000,
+    "admin switched to worker mode did not receive the active alert",
+  );
+  const switchedAdminEvent = eventsByWorker.get(switchedAdmin.id)!
+    .find((event) => event.serviceId === adminModeServiceId)!;
+  assert.equal(switchedAdminEvent.phase, "promax");
+  assert.equal(
+    eventsByWorker.get(adminModeOff.id)?.some((event) => event.serviceId === adminModeServiceId) ?? false,
+    false,
+    "an admin outside worker mode must not receive the active alert",
+  );
+  assert.equal(
+    eventsByWorker.get(unavailableAdmin.id)?.some((event) => event.serviceId === adminModeServiceId) ?? false,
+    false,
+    "an admin in worker mode but unavailable must not receive the active alert",
+  );
+
+  const adminViewResponse = await fetch(`${BASE_URL}/api/alert-sessions/${adminModeServiceId}/view`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bearer ${signToken({
+        id: switchedAdmin.id,
+        email: switchedAdmin.email,
+        role: "worker",
+        originalRole: "admin",
+      })}`,
+    },
+  });
+  assert.equal(
+    adminViewResponse.status,
+    200,
+    `admin in worker mode could not engage the received alert: ${await adminViewResponse.text()}`,
+  );
+
+  console.log("Service alert real-time flow passed: worker tiers, admin worker-mode gating, replay, FIFO queue behavior, and timeout delivery.");
 }
 
 main()

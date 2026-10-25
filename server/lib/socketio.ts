@@ -12,6 +12,7 @@ import { sendDataMessage } from "./firebase";
 import { sendVoipPush } from "./apns";
 import { signToken } from "./auth";
 import { featureEnabled, getActivePlanForUser } from "./subscription-access";
+import { canReceiveWorkerAlerts } from "./alert-recipient-selection";
 
 let io: SocketServer | null = null;
 
@@ -406,6 +407,8 @@ export async function initSocketIO(httpServer: HTTPServer): Promise<SocketServer
       const payload = verifyToken(token);
       if (payload) {
         socket.data.userId = payload.id;
+        socket.data.activeRole = payload.role;
+        socket.data.originalRole = payload.originalRole;
       }
     }
     next();
@@ -850,4 +853,17 @@ export function emitToWorkers(workerIds: number[], event: string, data: unknown)
 
 export function getOnlineUserSet(): Set<number> {
   return new Set(onlineUsers.keys());
+}
+
+export async function isAdminInWorkerMode(userId: number): Promise<boolean> {
+  if (!io) return false;
+  try {
+    const sockets = await io.in(`user_${userId}`).fetchSockets();
+    return sockets.some((socket) =>
+      canReceiveWorkerAlerts("admin", socket.data.activeRole, socket.data.originalRole)
+    );
+  } catch (error) {
+    console.error("Could not check admin worker-mode sockets:", error);
+    return false;
+  }
 }

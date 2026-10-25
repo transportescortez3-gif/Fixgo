@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import {
+  canReceiveWorkerAlerts,
   NEARBY_DELAY_MS,
   resolveLatestWorkerPlans,
   splitAlertRecipients,
 } from "./alert-recipient-selection";
+
+assert.equal(canReceiveWorkerAlerts("worker", "client", "worker"), true);
+assert.equal(canReceiveWorkerAlerts("admin", "worker", "admin"), true);
+assert.equal(canReceiveWorkerAlerts("admin", "admin", undefined), false);
+assert.equal(canReceiveWorkerAlerts("admin", "client", "admin"), false);
+assert.equal(canReceiveWorkerAlerts("client", "worker", "client"), false);
 
 const workers = [
   ...Array.from({ length: 10 }, (_, index) => ({ id: `plus-${index}`, isProMax: true })),

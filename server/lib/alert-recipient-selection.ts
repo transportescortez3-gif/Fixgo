@@ -1,5 +1,14 @@
 export const NEARBY_DELAY_MS = 10_000;
 
+export function canReceiveWorkerAlerts(
+  databaseRole: string,
+  activeRole: string | null | undefined,
+  originalRole: string | null | undefined,
+): boolean {
+  return databaseRole === "worker" ||
+    (databaseRole === "admin" && activeRole === "worker" && originalRole === "admin");
+}
+
 export interface ActiveWorkerPlanRow {
   userId: number;
   id: number;

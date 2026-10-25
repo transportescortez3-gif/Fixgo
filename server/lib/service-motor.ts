@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { db, servicesTable, usersTable, alertSessionsTable, workerAlertSlotsTable, proposalsTable, workerCategoriesTable, messagesTable, subscriptionPlansTable } from "../db";
 import { userSubscriptionsTable } from "../db/schema/subscriptions";
 import { eq, and, isNull, isNotNull, or, lt, gt, lte, asc, inArray, sql } from "drizzle-orm";
-import { emitToWorkers, emitToUser, emitToService } from "./socketio";
+import { emitToWorkers, emitToUser, emitToService, isAdminInWorkerMode } from "./socketio";
 import { createNotification, createNotifications } from "./createNotification";
 import { logger } from "./logger";
 import {
@@ -31,6 +31,12 @@ const ACTIVE_TIMEOUT_MS = 60_000;     // 60 s para la fase activa (Pro Max + cer
 const ARRIVAL_AUTO_START_DELAY_MS = 10 * 60_000;
 
 const PROMAX_PLAN_CODES = ["pro_plus_monthly", "pro_plus_annual"];
+
+async function isActiveWorkerRecipient(userId: number, databaseRole: string): Promise<boolean> {
+  if (databaseRole === "worker") return true;
+  if (databaseRole !== "admin") return false;
+  return isAdminInWorkerMode(userId);
+}
 
 // Timers individuales por (serviceId, workerId)
 const alertTimers = new Map<string, NodeJS.Timeout>();
@@ -91,7 +97,7 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
 
     if (
       !worker ||
-      worker.role !== "worker" ||
+      !(await isActiveWorkerRecipient(workerId, worker.role)) ||
       !worker.isAvailable ||
       worker.status !== "active" ||
       (worker.alertCooldownUntil && worker.alertCooldownUntil > now) ||
@@ -702,11 +708,12 @@ async function launchCombinedActivePhase(
       id: usersTable.id,
       lat: usersTable.lat,
       lng: usersTable.lng,
+      role: usersTable.role,
     })
     .from(usersTable)
     .innerJoin(workerCategoriesTable, eq(workerCategoriesTable.workerId, usersTable.id))
     .where(and(
-      eq(usersTable.role, "worker"),
+      inArray(usersTable.role, ["worker", "admin"]),
       eq(usersTable.isAvailable, true),
       eq(usersTable.status, "active"),
       eq(workerCategoriesTable.categoryId, service.categoryId!),
@@ -715,7 +722,15 @@ async function launchCombinedActivePhase(
       or(isNull(usersTable.suspendedUntil), lt(usersTable.suspendedUntil, now)),
     ));
 
-  logger.info({ serviceId, eligibleWorkers: allEligible.length }, "motor: eligible workers found");
+  const activeRoleCandidates = await Promise.all(allEligible.map(async (worker) => ({
+    worker,
+    activeAsWorker: await isActiveWorkerRecipient(worker.id, worker.role),
+  })));
+  const eligibleWorkers = activeRoleCandidates
+    .filter((candidate) => candidate.activeAsWorker)
+    .map((candidate) => candidate.worker);
+
+  logger.info({ serviceId, eligibleWorkers: eligibleWorkers.length }, "motor: eligible workers found");
 
   // Calificar:
   //  - Sin coordenadas en el servicio: TODOS los workers de la categoría califican
@@ -723,7 +738,7 @@ async function launchCombinedActivePhase(
   //  - Con coordenadas:
   //    · Pro Max → dentro de alertRadiusKm (o ilimitado si no tiene radio)
   //    · No Pro Max → dentro de NEARBY_RADIUS_KM
-  const rankedCandidates = allEligible
+  const rankedCandidates = eligibleWorkers
     .map(w => {
       const distKm =
         hasCoords && w.lat && w.lng
@@ -755,8 +770,8 @@ async function launchCombinedActivePhase(
 
   logger.info({
     serviceId,
-    eligibleWorkers: allEligible.length,
-    excludedByRadius: allEligible.length - rankedCandidates.length,
+    eligibleWorkers: eligibleWorkers.length,
+    excludedByRadius: eligibleWorkers.length - rankedCandidates.length,
   }, "motor: radius filter diagnostics");
 
   const { proMaxWorkers, nearbyWorkers } = splitAlertRecipients(rankedCandidates);
@@ -917,7 +932,12 @@ export async function handleWorkerView(serviceId: number, workerId: number): Pro
       status: usersTable.status,
       isAvailable: usersTable.isAvailable,
     }).from(usersTable).where(eq(usersTable.id, workerId)).limit(1);
-    if (!worker || worker.role !== "worker" || worker.status !== "active" || !worker.isAvailable) return false;
+    if (
+      !worker ||
+      !(await isActiveWorkerRecipient(workerId, worker.role)) ||
+      worker.status !== "active" ||
+      !worker.isAvailable
+    ) return false;
 
     const [category] = await tx.select({ workerId: workerCategoriesTable.workerId })
       .from(workerCategoriesTable)
@@ -1095,6 +1115,7 @@ export async function transitionToPassive(serviceId: number): Promise<void> {
       id: usersTable.id,
       lat: usersTable.lat,
       lng: usersTable.lng,
+      role: usersTable.role,
       planCode: userSubscriptionsTable.planCode,
       planFeatures: subscriptionPlansTable.features,
     })
@@ -1106,7 +1127,8 @@ export async function transitionToPassive(serviceId: number): Promise<void> {
     ))
     .leftJoin(subscriptionPlansTable, eq(userSubscriptionsTable.planCode, subscriptionPlansTable.code))
     .where(and(
-      eq(usersTable.role, "worker"),
+      inArray(usersTable.role, ["worker", "admin"]),
+      eq(usersTable.isAvailable, true),
       eq(usersTable.status, "active"),
       eq(workerCategoriesTable.categoryId, service.categoryId!),
       // Expertos suspendidos tampoco ven la bandeja de disponibles
@@ -1128,16 +1150,20 @@ export async function transitionToPassive(serviceId: number): Promise<void> {
     ...assignedServices.map((service) => service.workerId).filter((id): id is number => id !== null),
   ]);
 
-  const eligible = allWorkers.filter(w => {
-    if (busyWorkerIds.has(w.id)) return false;
-    if (!hasServiceCoords || !w.lat || !w.lng) return true; // sin coords → incluir
-    const dist = haversineKm(w.lat, w.lng, service.lat!, service.lng!);
-    const planFeatures = w.planFeatures as Record<string, unknown> | null;
+  const activeRoleRows = await Promise.all(allWorkers.map(async (worker) => ({
+    worker,
+    activeAsWorker: await isActiveWorkerRecipient(worker.id, worker.role),
+  })));
+  const eligible = activeRoleRows.filter(({ worker, activeAsWorker }) => {
+    if (!activeAsWorker || busyWorkerIds.has(worker.id)) return false;
+    if (!hasServiceCoords || !worker.lat || !worker.lng) return true; // sin coords → incluir
+    const dist = haversineKm(worker.lat, worker.lng, service.lat!, service.lng!);
+    const planFeatures = worker.planFeatures as Record<string, unknown> | null;
     const radiusKm = typeof planFeatures?.radius_km === "number"
       ? planFeatures.radius_km
       : 5;
     return radiusKm < 0 || dist <= radiusKm;
-  });
+  }).map(({ worker }) => worker);
 
   logger.info({
     serviceId,
@@ -1210,6 +1236,18 @@ export async function pauseWorkerAlertQueue(workerId: number): Promise<void> {
 export async function reemitActiveAlertsForWorker(workerId: number): Promise<void> {
   try {
     const now = new Date();
+    const [worker] = await db.select({
+      role: usersTable.role,
+      status: usersTable.status,
+      isAvailable: usersTable.isAvailable,
+    }).from(usersTable).where(eq(usersTable.id, workerId)).limit(1);
+    if (
+      !worker ||
+      !(await isActiveWorkerRecipient(workerId, worker.role)) ||
+      worker.status !== "active" ||
+      !worker.isAvailable
+    ) return;
+
     const [slot] = await db.select()
       .from(workerAlertSlotsTable)
       .where(eq(workerAlertSlotsTable.workerId, workerId))
@@ -1311,7 +1349,12 @@ export async function reemitOpenServicesForWorker(workerId: number): Promise<voi
       .where(eq(usersTable.id, workerId))
       .limit(1);
 
-    if (!worker || worker.role !== "worker" || !worker.isAvailable || worker.status !== "active") return;
+    if (
+      !worker ||
+      !(await isActiveWorkerRecipient(workerId, worker.role)) ||
+      !worker.isAvailable ||
+      worker.status !== "active"
+    ) return;
     const now = new Date();
     if (worker.alertCooldownUntil && worker.alertCooldownUntil > now) return;
     if (worker.suspendedUntil && worker.suspendedUntil > now) return;

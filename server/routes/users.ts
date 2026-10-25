@@ -475,7 +475,7 @@ router.patch("/workers/:id/availability", authenticate, async (req: AuthRequest,
   // el nuevo estado de disponibilidad/ubicación del worker.
   invalidateNearbyWorkersCache();
 
-  if (updated.role === "worker") {
+  if (updated.role === "worker" || req.userRole === "worker") {
     if (updated.isAvailable) await resumeWorkerQueue(updated.id);
     else await pauseWorkerAlertQueue(updated.id);
   }
