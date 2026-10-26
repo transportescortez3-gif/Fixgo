@@ -1,1 +1,0 @@
-const e={client:"client",worker:"worker"},t={active:"active",pending:"pending"},s={client:"client",worker:"worker",admin:"admin"},n={active:"active",blocked:"blocked",pending:"pending"};export{s as L,e as R,t as U,n as a};
