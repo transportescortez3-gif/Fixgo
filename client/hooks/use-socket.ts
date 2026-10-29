@@ -8,6 +8,25 @@ const SOCKET_URL = Capacitor.isNativePlatform()
   : window.location.origin;
 
 let sharedSocket: Socket | null = null;
+export type SocketAuthStatus = "checking" | "authenticated" | "unauthenticated" | "disconnected";
+
+let socketAuthStatus: SocketAuthStatus = "checking";
+const socketAuthStatusListeners = new Set<(status: SocketAuthStatus) => void>();
+
+function updateSocketAuthStatus(status: SocketAuthStatus): void {
+  socketAuthStatus = status;
+  socketAuthStatusListeners.forEach((listener) => listener(status));
+}
+
+export function getSocketAuthStatus(): SocketAuthStatus {
+  return socketAuthStatus;
+}
+
+export function subscribeSocketAuthStatus(listener: (status: SocketAuthStatus) => void): () => void {
+  socketAuthStatusListeners.add(listener);
+  listener(socketAuthStatus);
+  return () => socketAuthStatusListeners.delete(listener);
+}
 
 // Reference-counted service/thread rooms so multiple components can join/leave safely.
 // Key: "serviceId" or "serviceId_wWorkerId"
@@ -38,7 +57,6 @@ function buildLeavePayload(serviceId: number, threadWorkerId: number | null): nu
 
 export function getSocket(): Socket {
   if (!sharedSocket) {
-    const token = localStorage.getItem("fixgo_token") ?? "";
     sharedSocket = io(SOCKET_URL, {
       path: "/socket.io",
       transports: ["websocket", "polling"],
@@ -52,10 +70,18 @@ export function getSocket(): Socket {
     // On every (re)connect: re-join all service/thread rooms still in use.
     // User rooms are auto-joined by the server (socket.join(`user_${uid}`) on connection).
     sharedSocket.on("connect", () => {
+      updateSocketAuthStatus("checking");
       serviceRoomRefs.forEach((entry) => {
         sharedSocket!.emit("join_service", buildJoinPayload(entry));
       });
     });
+    sharedSocket.on("disconnect", () => updateSocketAuthStatus("disconnected"));
+    sharedSocket.on("connect_error", () => updateSocketAuthStatus("disconnected"));
+    sharedSocket.on(
+      "socket:auth_status",
+      (data: { authenticated?: boolean }) =>
+        updateSocketAuthStatus(data?.authenticated ? "authenticated" : "unauthenticated"),
+    );
   }
   return sharedSocket;
 }

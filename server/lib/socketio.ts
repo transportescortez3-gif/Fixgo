@@ -6,6 +6,7 @@ import { messagesTable } from "../db/schema/messages";
 import { usersTable } from "../db/schema/users";
 import { servicesTable } from "../db/schema/services";
 import { proposalsTable } from "../db/schema/proposals";
+import { alertSessionsTable } from "../db/schema/alert-sessions";
 import { and, eq, or, sql } from "drizzle-orm";
 import { createNotification } from "./createNotification";
 import { sendDataMessage } from "./firebase";
@@ -409,7 +410,11 @@ export async function initSocketIO(httpServer: HTTPServer): Promise<SocketServer
         socket.data.userId = payload.id;
         socket.data.activeRole = payload.role;
         socket.data.originalRole = payload.originalRole;
+      } else {
+        socket.data.authFailure = "invalid_token";
       }
+    } else {
+      socket.data.authFailure = "missing_token";
     }
     next();
   });
@@ -418,6 +423,11 @@ export async function initSocketIO(httpServer: HTTPServer): Promise<SocketServer
     const uid = socket.data.userId as number | undefined;
     if (uid) {
       socket.join(`user_${uid}`);
+      socket.emit("socket:auth_status", { authenticated: true });
+      console.info("Socket.io authenticated user room joined", {
+        userId: uid,
+        activeRole: socket.data.activeRole,
+      });
       onlineUsers.set(uid, (onlineUsers.get(uid) || 0) + 1);
       notifySubscribers(uid);
       // Si la app se acaba de abrir (p.ej. tras "Contestar" en la pantalla
@@ -427,15 +437,19 @@ export async function initSocketIO(httpServer: HTTPServer): Promise<SocketServer
       // Si el caller reconecta y la llamada ya fue contestada pero él perdió
       // el call:answered por la caída del socket, reenviarlo ahora.
       reemitPendingAnswered(uid);
-      // Re-emitir alertas activas pendientes para workers que abren la app
-      // después de que se publicaron órdenes cercanas (import dinámico para
-      // evitar dependencia circular con service-motor que importa de socketio).
+      // La tarjeta registra su listener antes de pedir el replay de alertas.
       setTimeout(() => {
-        import("./service-motor").then(({ reemitActiveAlertsForWorker, reemitOpenServicesForWorker }) => {
-          reemitActiveAlertsForWorker(uid!).catch(() => {});
+        import("./service-motor").then(({ reemitOpenServicesForWorker }) => {
           reemitOpenServicesForWorker(uid!).catch(() => {});
         });
       }, 800);
+    } else {
+      const reason = socket.data.authFailure as string | undefined;
+      socket.emit("socket:auth_status", { authenticated: false, reason: reason ?? "missing_token" });
+      console.warn("Socket.io connection is not authenticated", {
+        socketId: socket.id,
+        reason: reason ?? "missing_token",
+      });
     }
 
     // Estado de ciclo de vida de la app (foreground/background) reportado por el
@@ -620,11 +634,73 @@ export async function initSocketIO(httpServer: HTTPServer): Promise<SocketServer
     });
 
     socket.on("service:replay_active_alerts", () => {
-      if (!uid) return;
+      if (!uid) {
+        socket.emit("service:alert_error", { reason: "authentication_required" });
+        console.warn("Rejected active service alert replay for unauthenticated socket", {
+          socketId: socket.id,
+        });
+        return;
+      }
       import("./service-motor")
-        .then(({ reemitActiveAlertsForWorker }) => reemitActiveAlertsForWorker(uid))
+        .then(({ reemitActiveAlertsForWorker }) => {
+          console.info("Active service alert replay requested", { workerId: uid });
+          return reemitActiveAlertsForWorker(uid);
+        })
         .catch((err) => console.error("Failed to replay active service alerts:", err));
     });
+
+    socket.on(
+      "service:alert_received",
+      async (
+        data: { serviceId?: number; deliveryId?: string } | null,
+        acknowledge?: (result: { accepted: boolean }) => void,
+      ) => {
+        if (!uid) {
+          socket.emit("service:alert_error", { reason: "authentication_required" });
+          acknowledge?.({ accepted: false });
+          return;
+        }
+        const serviceId = data?.serviceId;
+        const deliveryId = data?.deliveryId;
+        if (!Number.isInteger(serviceId) || (serviceId ?? 0) <= 0 || !deliveryId) {
+          acknowledge?.({ accepted: false });
+          return;
+        }
+
+        try {
+          const [session] = await db.select({ id: alertSessionsTable.id })
+            .from(alertSessionsTable)
+            .where(and(
+              eq(alertSessionsTable.serviceId, serviceId!),
+              eq(alertSessionsTable.workerId, uid),
+              eq(alertSessionsTable.deliveryId, deliveryId),
+            ))
+            .limit(1);
+          if (!session) {
+            console.warn("Rejected alert receipt without matching recipient session", {
+              serviceId,
+              workerId: uid,
+              deliveryId,
+            });
+            acknowledge?.({ accepted: false });
+            return;
+          }
+          console.info("Active service alert received by worker", {
+            serviceId,
+            workerId: uid,
+            deliveryId,
+          });
+          acknowledge?.({ accepted: true });
+        } catch (err) {
+          console.error("Failed to validate active service alert receipt", {
+            serviceId,
+            workerId: uid,
+            err,
+          });
+          acknowledge?.({ accepted: false });
+        }
+      },
+    );
 
     socket.on("leave_user", (userId: number) => {
       if (socket.data.userId === userId) {

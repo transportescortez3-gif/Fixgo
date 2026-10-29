@@ -47,6 +47,7 @@ const accounts: TestAccount[] = [];
 const serviceIds: number[] = [];
 const sockets: Socket[] = [];
 const eventsByWorker = new Map<number, AlertEvent[]>();
+const acceptedReceiptsByWorker = new Map<number, string[]>();
 const socketsByWorker = new Map<number, Socket>();
 const expiredEventsByWorker = new Map<number, ExpiredAlertEvent[]>();
 
@@ -88,6 +89,7 @@ async function createAccount(
   const result = { id: account.id, email, role, name };
   accounts.push(result);
   eventsByWorker.set(account.id, []);
+  acceptedReceiptsByWorker.set(account.id, []);
   expiredEventsByWorker.set(account.id, []);
   return result;
 }
@@ -114,9 +116,30 @@ async function connectWorker(
   sockets.push(socket);
   socket.on("service:active_alert", (event: AlertEvent) => {
     eventsByWorker.get(worker.id)?.push(event);
+    if (event.deliveryId) {
+      socket.emit(
+        "service:alert_received",
+        { serviceId: event.serviceId, deliveryId: event.deliveryId },
+        (result: { accepted: boolean }) => {
+          if (result?.accepted) acceptedReceiptsByWorker.get(worker.id)?.push(event.deliveryId!);
+        },
+      );
+    }
   });
   socket.on("service:alert_expired", (event: ExpiredAlertEvent) => {
     expiredEventsByWorker.get(worker.id)?.push(event);
+  });
+
+  const authStatusPromise = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`Socket auth status timed out for ${worker.name}`)), 8_000);
+    socket.once("socket:auth_status", (status: { authenticated?: boolean }) => {
+      clearTimeout(timeout);
+      if (!status?.authenticated) {
+        reject(new Error(`Socket failed authentication for ${worker.name}`));
+        return;
+      }
+      resolve();
+    });
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -131,7 +154,52 @@ async function connectWorker(
     });
     socket.connect();
   });
+  await authStatusPromise;
+  socket.emit("service:replay_active_alerts");
   return socket;
+}
+
+async function verifyUnauthenticatedSocketStatus(): Promise<void> {
+  const socket = io(BASE_URL, {
+    path: "/socket.io",
+    transports: ["websocket", "polling"],
+    autoConnect: false,
+    reconnection: false,
+    auth: { token: "" },
+  });
+  sockets.push(socket);
+
+  const statusPromise = new Promise<{ authenticated?: boolean }>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Unauthenticated socket status timed out")), 8_000);
+    socket.once("socket:auth_status", (status: { authenticated?: boolean }) => {
+      clearTimeout(timeout);
+      resolve(status);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Unauthenticated socket connection timed out")), 8_000);
+    socket.once("connect", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    socket.once("connect_error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    socket.connect();
+  });
+  assert.equal((await statusPromise).authenticated, false);
+
+  const replayError = new Promise<{ reason?: string }>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Unauthenticated replay was not rejected")), 8_000);
+    socket.once("service:alert_error", (error: { reason?: string }) => {
+      clearTimeout(timeout);
+      resolve(error);
+    });
+  });
+  socket.emit("service:replay_active_alerts");
+  assert.equal((await replayError).reason, "authentication_required");
+  socket.disconnect();
 }
 
 async function cleanup(): Promise<void> {
@@ -159,6 +227,8 @@ async function cleanup(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  await verifyUnauthenticatedSocketStatus();
+
   const [category] = await db.select({
     id: categoriesTable.id,
   }).from(categoriesTable).where(and(
@@ -258,6 +328,12 @@ async function main(): Promise<void> {
   assert.equal(proMaxEvent.title, `${PREFIX}: reparación urgente`);
   assert.equal(proMaxEvent.budgetNote, "Este presupuesto solo debe mostrarse a Pro Max");
   assert.ok(Date.now() - startedAt < NEARBY_DELAY_MS, "Pro Max must receive the card before the nearby phase");
+  assert.ok(proMaxEvent.deliveryId, "the active alert must have a delivery ID");
+  await waitUntil(
+    () => acceptedReceiptsByWorker.get(proMax.id)?.includes(proMaxEvent.deliveryId!) ?? false,
+    3_000,
+    "the server did not confirm the authenticated recipient's alert receipt",
+  );
 
   await sleep(Math.max(0, startedAt + NEARBY_DELAY_MS - 500 - Date.now()));
   for (const nearbyWorker of [pro, free]) {

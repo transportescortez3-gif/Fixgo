@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useLocation } from "wouter";
 import { AnimatePresence, motion } from "framer-motion";
-import { getSocket } from "@/hooks/use-socket";
+import {
+  getSocket,
+  getSocketAuthStatus,
+  subscribeSocketAuthStatus,
+  type SocketAuthStatus,
+} from "@/hooks/use-socket";
 import { useAuth } from "@/hooks/use-auth";
 import { Star, MapPin, Crown, Zap, X, ArrowRight } from "lucide-react";
 import { ClientIdentity } from "@/components/client-identity";
@@ -37,6 +42,7 @@ export default function ServiceAlertModal() {
 
   // Inicializar desde el módulo para que el remount recupere la cola existente
   const [queue, setQueueState] = useState<QueuedServiceAlert[]>(_moduleQueue);
+  const [socketStatus, setSocketStatus] = useState<SocketAuthStatus>(getSocketAuthStatus());
   const [secondsLeft, setSecondsLeft] = useState(60);
 
   // Wrapper que sincroniza React state ↔ módulo en cada cambio
@@ -122,23 +128,39 @@ export default function ServiceAlertModal() {
     if (!socket) return;
 
     const handleActiveAlert = (payload: ServiceAlertPayload) => {
-      setQueue(prev => {
-        const merged = mergeIncomingServiceAlert(prev, payload);
-        if (merged.resetHandled) _moduleHandledIds.delete(payload.serviceId);
-        return merged.queue;
-      });
+      if (!payload || !Number.isInteger(payload.serviceId) || payload.serviceId <= 0) return;
+      const merged = mergeIncomingServiceAlert(_moduleQueue, payload);
+      if (merged.resetHandled) _moduleHandledIds.delete(payload.serviceId);
+      _moduleQueue = merged.queue;
+      setQueueState(merged.queue);
+      if (payload.deliveryId) {
+        socket.emit("service:alert_received", {
+          serviceId: payload.serviceId,
+          deliveryId: payload.deliveryId,
+        });
+      }
+    };
+
+    const requestReplay = (status: SocketAuthStatus) => {
+      setSocketStatus(status);
+      if (status === "authenticated" && socket.connected) {
+        socket.emit("service:replay_active_alerts");
+      }
     };
 
     socket.on("service:active_alert", handleActiveAlert);
-    socket.on("service:alert_expired", ({ serviceId }: { serviceId: number }) => removeFromQueue(serviceId));
-    socket.on("service:taken", ({ serviceId }: { serviceId: number }) => removeFromQueue(serviceId));
-    // Re-fetch an alert that arrived before authentication finished mounting this modal.
-    socket.emit("service:replay_active_alerts");
+    const handleExpired = ({ serviceId }: { serviceId: number }) => removeFromQueue(serviceId);
+    const handleTaken = ({ serviceId }: { serviceId: number }) => removeFromQueue(serviceId);
+    socket.on("service:alert_expired", handleExpired);
+    socket.on("service:taken", handleTaken);
+    // Register the alert listener first; replay only after server authentication.
+    const unsubscribeAuthStatus = subscribeSocketAuthStatus(requestReplay);
 
     return () => {
       socket.off("service:active_alert", handleActiveAlert);
-      socket.off("service:alert_expired");
-      socket.off("service:taken");
+      socket.off("service:alert_expired", handleExpired);
+      socket.off("service:taken", handleTaken);
+      unsubscribeAuthStatus();
     };
   }, [isWorker, removeFromQueue]);
 
@@ -188,6 +210,22 @@ export default function ServiceAlertModal() {
 
   return (
     <AnimatePresence>
+      {(socketStatus === "unauthenticated" || socketStatus === "disconnected") && (
+        <motion.div
+          key="socket-alert-status"
+          role="status"
+          aria-live="polite"
+          className="fixed z-[10000] rounded-xl border border-amber-500/30 bg-slate-950/95 px-4 py-3 text-sm text-white shadow-xl"
+          style={{ bottom: 16, left: 12, right: 12, maxWidth: 420, margin: "0 auto" }}
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          exit={{ y: 20, opacity: 0 }}
+        >
+          {socketStatus === "unauthenticated"
+            ? "La conexión no está autenticada. Inicia sesión nuevamente para recibir trabajos."
+            : "Conexión interrumpida. Intentando reconectar para recibir trabajos…"}
+        </motion.div>
+      )}
       {currentAlert && (
         <>
           {/* Backdrop */}
