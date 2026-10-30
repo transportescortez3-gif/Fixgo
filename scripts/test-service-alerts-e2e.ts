@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { io, type Socket } from "socket.io-client";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import {
   db,
   alertSessionsTable,
   categoriesTable,
+  messagesTable,
   notificationsTable,
+  proposalsTable,
   servicesTable,
   subscriptionPlansTable,
   userSubscriptionsTable,
@@ -29,10 +32,16 @@ interface AlertEvent {
   deliveryId?: string;
   title: string;
   phase?: "promax" | "nearby";
+  distanceKm?: number | null;
+  totalSeconds?: number;
   budgetNote?: string | null;
 }
 
 interface ExpiredAlertEvent {
+  serviceId: number;
+}
+
+interface TakenAlertEvent {
   serviceId: number;
 }
 
@@ -45,11 +54,13 @@ interface TestAccount {
 
 const accounts: TestAccount[] = [];
 const serviceIds: number[] = [];
+const categoryIds: number[] = [];
 const sockets: Socket[] = [];
 const eventsByWorker = new Map<number, AlertEvent[]>();
 const acceptedReceiptsByWorker = new Map<number, string[]>();
 const socketsByWorker = new Map<number, Socket>();
 const expiredEventsByWorker = new Map<number, ExpiredAlertEvent[]>();
+const takenEventsByWorker = new Map<number, TakenAlertEvent[]>();
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -91,7 +102,38 @@ async function createAccount(
   eventsByWorker.set(account.id, []);
   acceptedReceiptsByWorker.set(account.id, []);
   expiredEventsByWorker.set(account.id, []);
+  takenEventsByWorker.set(account.id, []);
   return result;
+}
+
+async function createServiceRequest(
+  client: TestAccount,
+  categoryId: number,
+  title: string,
+  location?: { lat: number; lng: number },
+): Promise<number> {
+  const response = await fetch(`${BASE_URL}/api/services`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${signToken({ id: client.id, email: client.email, role: client.role })}`,
+    },
+    body: JSON.stringify({
+      title,
+      description: "Solicitud temporal para verificar alertas simultáneas.",
+      categoryId,
+      address: "Dirección de prueba",
+      paymentMethod: "cash",
+      ...(location ?? {}),
+    }),
+  });
+  const responseText = await response.text();
+  assert.equal(response.status, 201, `service creation failed: ${response.status} ${responseText}`);
+  const created = JSON.parse(responseText) as { id?: number; service?: { id?: number } };
+  const serviceId = created.id ?? created.service?.id;
+  assert.ok(serviceId, "the service creation response must include its ID");
+  serviceIds.push(serviceId);
+  return serviceId;
 }
 
 async function connectWorker(
@@ -128,6 +170,9 @@ async function connectWorker(
   });
   socket.on("service:alert_expired", (event: ExpiredAlertEvent) => {
     expiredEventsByWorker.get(worker.id)?.push(event);
+  });
+  socket.on("service:taken", (event: TakenAlertEvent) => {
+    takenEventsByWorker.get(worker.id)?.push(event);
   });
 
   const authStatusPromise = new Promise<void>((resolve, reject) => {
@@ -217,13 +262,130 @@ async function cleanup(): Promise<void> {
     await db.delete(userSubscriptionsTable).where(inArray(userSubscriptionsTable.userId, workerIds));
   }
   if (allServiceIds.length) {
+    await db.delete(messagesTable).where(inArray(messagesTable.serviceId, allServiceIds));
+    await db.delete(proposalsTable).where(inArray(proposalsTable.serviceId, allServiceIds));
     await db.delete(alertSessionsTable).where(inArray(alertSessionsTable.serviceId, allServiceIds));
+    await db.delete(workerAlertSlotsTable).where(inArray(workerAlertSlotsTable.serviceId, allServiceIds));
     await db.delete(servicesTable).where(inArray(servicesTable.id, allServiceIds));
+  }
+  if (categoryIds.length) {
+    await db.delete(categoriesTable).where(inArray(categoriesTable.id, categoryIds));
   }
   if (accountIds.length) {
     await db.delete(notificationsTable).where(inArray(notificationsTable.userId, accountIds));
     await db.delete(usersTable).where(inArray(usersTable.id, accountIds));
   }
+}
+
+async function createServiceFixture(
+  client: TestAccount,
+  categoryId: number,
+  title: string,
+  status: "pending" | "alerting" = "alerting",
+): Promise<number> {
+  const [service] = await db.insert(servicesTable).values({
+    title,
+    description: "Solicitud temporal de regresión de asignación.",
+    status,
+    clientId: client.id,
+    categoryId,
+    address: "Dirección de prueba",
+    paymentMethod: "cash",
+  }).returning({ id: servicesTable.id });
+  serviceIds.push(service.id);
+  return service.id;
+}
+
+async function createActiveAlertFixture(
+  client: TestAccount,
+  worker: TestAccount,
+  categoryId: number,
+  title: string,
+): Promise<number> {
+  const serviceId = await createServiceFixture(client, categoryId, title, "alerting");
+  const now = new Date();
+  const deliveryId = randomUUID();
+  await db.insert(alertSessionsTable).values({
+    serviceId,
+    workerId: worker.id,
+    sentAt: now,
+    availableAt: now,
+    expiresAt: new Date(now.getTime() + 60_000),
+    deliveredAt: now,
+    deliveryId,
+    phase: "promax",
+    response: "pending",
+  });
+  await db.insert(workerAlertSlotsTable).values({
+    workerId: worker.id,
+    serviceId,
+    state: "pending",
+    deliveryId,
+  });
+  return serviceId;
+}
+
+async function assertAssignmentClosesOtherAlerts(
+  client: TestAccount,
+  worker: TestAccount,
+  categoryId: number,
+  assignedServiceId: number,
+  alertServiceIds: number[],
+): Promise<void> {
+  const [assignedService] = await db.select({
+    status: servicesTable.status,
+    workerId: servicesTable.workerId,
+  }).from(servicesTable).where(eq(servicesTable.id, assignedServiceId)).limit(1);
+  assert.equal(assignedService?.workerId, worker.id, "the accepted service must belong to the expected expert");
+  assert.ok(
+    assignedService?.status === "accepted" || assignedService?.status === "in_progress",
+    "the accepted service must block further alert dispatch",
+  );
+
+  await waitUntil(
+    () => alertServiceIds.every((serviceId) =>
+      takenEventsByWorker.get(worker.id)?.some((event) => event.serviceId === serviceId)
+    ),
+    3_000,
+    `${worker.name} did not receive service:taken for every other active card`,
+  );
+  for (const serviceId of alertServiceIds) {
+    const [session] = await db.select().from(alertSessionsTable).where(and(
+      eq(alertSessionsTable.serviceId, serviceId),
+      eq(alertSessionsTable.workerId, worker.id),
+    )).limit(1);
+    assert.equal(session?.response, "skipped", "every other active alert session must be closed");
+    assert.ok(session?.respondedAt, "a closed alert session must record when it was closed");
+  }
+  const leftoverSlots = await db.select({ serviceId: workerAlertSlotsTable.serviceId })
+    .from(workerAlertSlotsTable).where(eq(workerAlertSlotsTable.workerId, worker.id));
+  assert.deepEqual(leftoverSlots, [], "assignment must release every other alert reservation");
+
+  const lateAlertServiceId = await createActiveAlertFixture(
+    client,
+    worker,
+    categoryId,
+    `${PREFIX}: alerta creada después de asignar`,
+  );
+  const beforeReplayCount = eventsByWorker.get(worker.id)?.length ?? 0;
+  socketsByWorker.get(worker.id)?.emit("service:replay_active_alerts");
+  await sleep(500);
+  assert.equal(
+    (eventsByWorker.get(worker.id)?.length ?? 0) - beforeReplayCount,
+    0,
+    "an expert with an active job must not receive alerts after replay",
+  );
+  const [lateSession] = await db.select().from(alertSessionsTable).where(and(
+    eq(alertSessionsTable.serviceId, lateAlertServiceId),
+    eq(alertSessionsTable.workerId, worker.id),
+  )).limit(1);
+  assert.equal(lateSession?.response, "skipped", "replay must invalidate stale sessions while the worker is busy");
+  assert.equal(
+    (await db.select({ serviceId: workerAlertSlotsTable.serviceId })
+      .from(workerAlertSlotsTable).where(eq(workerAlertSlotsTable.workerId, worker.id))).length,
+    0,
+    "a busy worker must not retain a reservation after alert replay",
+  );
 }
 
 async function main(): Promise<void> {
@@ -236,6 +398,15 @@ async function main(): Promise<void> {
     eq(categoriesTable.platform, "expertos"),
   )).limit(1);
   assert.ok(category, "an active Expertos category is needed for the test");
+  const [parallelCategory] = await db.insert(categoriesTable).values({
+    name: `${PREFIX}: categoría de alertas simultáneas`,
+    platform: "expertos",
+  }).returning({ id: categoriesTable.id });
+  const [otherCategory] = await db.insert(categoriesTable).values({
+    name: `${PREFIX}: categoría distinta`,
+    platform: "expertos",
+  }).returning({ id: categoriesTable.id });
+  categoryIds.push(parallelCategory.id, otherCategory.id);
 
   const planRows = await db.select({
     code: subscriptionPlansTable.code,
@@ -250,6 +421,10 @@ async function main(): Promise<void> {
   const pro = await createAccount("Experto Pro de prueba", "worker", 2);
   const free = await createAccount("Experto Gratis de prueba", "worker", 3);
   const workers = [proMax, pro, free];
+  const simultaneousProMax = await createAccount("Experto Pro Max simultáneo", "worker", 7);
+  const outsideRadiusProMax = await createAccount("Experto Pro Max fuera del radio", "worker", 8);
+  const missingLocationProMax = await createAccount("Experto Pro Max sin coordenadas", "worker", 9);
+  const otherCategoryProMax = await createAccount("Experto Pro Max de otra categoría", "worker", 10);
 
   for (const worker of workers) {
     await db.insert(workerCategoriesTable).values({
@@ -258,6 +433,38 @@ async function main(): Promise<void> {
       isPrimary: true,
     });
   }
+  for (const worker of [simultaneousProMax, outsideRadiusProMax, missingLocationProMax]) {
+    await db.insert(workerCategoriesTable).values({
+      workerId: worker.id,
+      categoryId: parallelCategory.id,
+      isPrimary: true,
+    });
+  }
+  await db.insert(workerCategoriesTable).values({
+    workerId: otherCategoryProMax.id,
+    categoryId: otherCategory.id,
+    isPrimary: true,
+  });
+  await db.update(usersTable).set({
+    lat: 0,
+    lng: 0,
+    alertRadiusKm: 20,
+  }).where(eq(usersTable.id, simultaneousProMax.id));
+  await db.update(usersTable).set({
+    lat: 1,
+    lng: 0,
+    alertRadiusKm: 5,
+  }).where(eq(usersTable.id, outsideRadiusProMax.id));
+  await db.update(usersTable).set({
+    lat: null,
+    lng: null,
+    alertRadiusKm: 5,
+  }).where(eq(usersTable.id, missingLocationProMax.id));
+  await db.update(usersTable).set({
+    lat: 0,
+    lng: 0,
+    alertRadiusKm: 20,
+  }).where(eq(usersTable.id, otherCategoryProMax.id));
 
   const periodStart = new Date();
   const periodEnd = new Date(periodStart.getTime() + 30 * 24 * 60 * 60 * 1000);
@@ -290,11 +497,156 @@ async function main(): Promise<void> {
       currentPeriodStart: periodStart,
       currentPeriodEnd: periodEnd,
     },
+    ...[
+      simultaneousProMax,
+      outsideRadiusProMax,
+      missingLocationProMax,
+      otherCategoryProMax,
+    ].map((worker) => ({
+      userId: worker.id,
+      planCode: PROMAX_PLAN,
+      status: "active" as const,
+      interval: "monthly" as const,
+      currentPeriodStart: periodStart,
+      currentPeriodEnd: periodEnd,
+    })),
   ]);
 
   for (const worker of workers) {
     socketsByWorker.set(worker.id, await connectWorker(worker));
   }
+  for (const worker of [
+    simultaneousProMax,
+    outsideRadiusProMax,
+    missingLocationProMax,
+    otherCategoryProMax,
+  ]) {
+    socketsByWorker.set(worker.id, await connectWorker(worker));
+  }
+
+  const simultaneousServiceIds = await Promise.all([
+    createServiceRequest(client, parallelCategory.id, `${PREFIX}: radio cercano uno`, { lat: 0.1, lng: 0 }),
+    createServiceRequest(client, parallelCategory.id, `${PREFIX}: radio cercano dos`, { lat: 0.12, lng: 0 }),
+    createServiceRequest(client, parallelCategory.id, `${PREFIX}: solicitud sin coordenadas`),
+  ]);
+  await waitUntil(
+    () => simultaneousServiceIds.every((serviceId) =>
+      eventsByWorker.get(simultaneousProMax.id)?.some((event) => event.serviceId === serviceId)
+    ),
+    8_000,
+    "Pro Max did not receive all eligible requests at the same time",
+  );
+  await waitUntil(
+    () => simultaneousServiceIds.every((serviceId) =>
+      eventsByWorker.get(missingLocationProMax.id)?.some((event) => event.serviceId === serviceId)
+    ),
+    8_000,
+    "Pro Max without coordinates did not receive all eligible requests",
+  );
+  await waitUntil(
+    () => eventsByWorker.get(outsideRadiusProMax.id)?.some(
+      (event) => event.serviceId === simultaneousServiceIds[2],
+    ) ?? false,
+    8_000,
+    "a Pro Max expert must still receive a request without service coordinates",
+  );
+  const simultaneousEvents = eventsByWorker.get(simultaneousProMax.id)!
+    .filter((event) => simultaneousServiceIds.includes(event.serviceId));
+  assert.equal(simultaneousEvents.length, simultaneousServiceIds.length);
+  assert.ok(simultaneousEvents.every((event) => event.phase === "promax"));
+  assert.ok(
+    simultaneousEvents.every((event) => Number.isInteger(event.totalSeconds) && event.totalSeconds! > 0),
+    "each active card must include its own remaining timer",
+  );
+  assert.equal(
+    eventsByWorker.get(missingLocationProMax.id)?.filter((event) =>
+      simultaneousServiceIds.includes(event.serviceId)
+    ).length,
+    simultaneousServiceIds.length,
+    "a Pro Max expert without coordinates must still receive eligible requests",
+  );
+  assert.equal(
+    eventsByWorker.get(missingLocationProMax.id)?.find(
+      (event) => event.serviceId === simultaneousServiceIds[0],
+    )?.distanceKm,
+    null,
+    "an alert for an expert without coordinates must not invent a distance",
+  );
+  assert.equal(
+    eventsByWorker.get(outsideRadiusProMax.id)?.some((event) =>
+      simultaneousServiceIds.slice(0, 2).includes(event.serviceId)
+    ),
+    false,
+    "a Pro Max expert outside the profile radius must not receive located requests",
+  );
+  assert.equal(
+    eventsByWorker.get(otherCategoryProMax.id)?.some((event) =>
+      simultaneousServiceIds.includes(event.serviceId)
+    ),
+    false,
+    "a Pro Max expert in another category must not receive these requests",
+  );
+  const [outsideRadiusSessions, otherCategorySessions, activeParallelSlots] = await Promise.all([
+    db.select({ id: alertSessionsTable.id }).from(alertSessionsTable).where(and(
+      eq(alertSessionsTable.workerId, outsideRadiusProMax.id),
+      inArray(alertSessionsTable.serviceId, simultaneousServiceIds.slice(0, 2)),
+    )),
+    db.select({ id: alertSessionsTable.id }).from(alertSessionsTable).where(and(
+      eq(alertSessionsTable.workerId, otherCategoryProMax.id),
+      inArray(alertSessionsTable.serviceId, simultaneousServiceIds),
+    )),
+    db.select({ serviceId: workerAlertSlotsTable.serviceId }).from(workerAlertSlotsTable).where(and(
+      eq(workerAlertSlotsTable.workerId, simultaneousProMax.id),
+      inArray(workerAlertSlotsTable.serviceId, simultaneousServiceIds),
+    )),
+  ]);
+  assert.equal(outsideRadiusSessions.length, 0, "outside-radius requests must not create alert sessions");
+  assert.equal(otherCategorySessions.length, 0, "ineligible categories must not create alert sessions");
+  assert.deepEqual(
+    activeParallelSlots.map((slot) => slot.serviceId).sort((a, b) => a - b),
+    [...simultaneousServiceIds].sort((a, b) => a - b),
+    "each simultaneous request must hold its own alert reservation",
+  );
+
+  const simultaneousHeaders = {
+    Authorization: `Bearer ${signToken({
+      id: simultaneousProMax.id,
+      email: simultaneousProMax.email,
+      role: simultaneousProMax.role,
+    })}`,
+  };
+  const omittedServiceId = simultaneousServiceIds[0];
+  const omitResponse = await fetch(`${BASE_URL}/api/alert-sessions/${omittedServiceId}/skip`, {
+    method: "PATCH",
+    headers: simultaneousHeaders,
+  });
+  assert.equal(omitResponse.status, 200, `Pro Max could not omit one alert: ${await omitResponse.text()}`);
+  const [omittedSession] = await db.select().from(alertSessionsTable).where(and(
+    eq(alertSessionsTable.serviceId, omittedServiceId),
+    eq(alertSessionsTable.workerId, simultaneousProMax.id),
+  )).limit(1);
+  assert.equal(omittedSession?.response, "skipped");
+  const remainingParallelSlots = await db.select({ serviceId: workerAlertSlotsTable.serviceId })
+    .from(workerAlertSlotsTable).where(and(
+      eq(workerAlertSlotsTable.workerId, simultaneousProMax.id),
+      inArray(workerAlertSlotsTable.serviceId, simultaneousServiceIds),
+    ));
+  assert.deepEqual(
+    remainingParallelSlots.map((slot) => slot.serviceId).sort((a, b) => a - b),
+    simultaneousServiceIds.slice(1).sort((a, b) => a - b),
+    "omitting one request must leave the other active alert reservations untouched",
+  );
+  for (const serviceId of simultaneousServiceIds.slice(1)) {
+    const releaseResponse = await fetch(`${BASE_URL}/api/alert-sessions/${serviceId}/skip`, {
+      method: "PATCH",
+      headers: simultaneousHeaders,
+    });
+    assert.equal(releaseResponse.status, 200, `Pro Max could not clear test alert ${serviceId}`);
+  }
+  const clearedParallelSlots = await db.select({ serviceId: workerAlertSlotsTable.serviceId })
+    .from(workerAlertSlotsTable).where(eq(workerAlertSlotsTable.workerId, simultaneousProMax.id));
+  assert.equal(clearedParallelSlots.length, 0, "clearing test alerts must release their reservations");
+
   const startedAt = Date.now();
   const response = await fetch(`${BASE_URL}/api/services`, {
     method: "POST",
@@ -382,6 +734,9 @@ async function main(): Promise<void> {
   });
   assert.equal(viewResponse.status, 200, `Pro Max could not engage the first alert: ${await viewResponse.text()}`);
 
+  /*
+   * Legacy FIFO-only coverage below assumed Pro Max could hold only one
+   * simultaneous alert. The active multi-alert behavior is covered above.
   const queuedServiceIds: number[] = [];
   const queuedSessions = new Map<number, typeof alertSessionsTable.$inferSelect>();
   for (let index = 1; index <= 3; index++) {
@@ -735,6 +1090,106 @@ async function main(): Promise<void> {
   assert.equal(timeoutQueuedSlots[0]?.serviceId, timeoutQueuedServiceId);
   assert.equal(timeoutQueuedSlots[0]?.state, "pending");
 
+  */
+
+  const releaseReviewedAlert = await fetch(`${BASE_URL}/api/alert-sessions/${serviceId}/release`, {
+    method: "PATCH",
+    headers: workerHeaders,
+  });
+  assert.equal(
+    releaseReviewedAlert.status,
+    200,
+    `Pro Max could not release the reviewed alert: ${await releaseReviewedAlert.text()}`,
+  );
+
+  const firstTimeoutServiceId = await createServiceRequest(
+    client,
+    category.id,
+    `${PREFIX}: alerta simultánea que vence primero`,
+  );
+  await waitUntil(
+    () => eventsByWorker.get(proMax.id)?.some((event) => event.serviceId === firstTimeoutServiceId) ?? false,
+    6_000,
+    "Pro Max did not receive the first independent timeout alert",
+  );
+  const [firstTimeoutSession] = await db.select().from(alertSessionsTable).where(and(
+    eq(alertSessionsTable.serviceId, firstTimeoutServiceId),
+    eq(alertSessionsTable.workerId, proMax.id),
+  )).limit(1);
+  assert.ok(firstTimeoutSession?.expiresAt, "the first active alert must have its own expiry deadline");
+
+  await sleep(2_500);
+  const secondTimeoutServiceId = await createServiceRequest(
+    client,
+    category.id,
+    `${PREFIX}: alerta simultánea que vence después`,
+  );
+  await waitUntil(
+    () => eventsByWorker.get(proMax.id)?.some((event) => event.serviceId === secondTimeoutServiceId) ?? false,
+    6_000,
+    "Pro Max did not receive a second alert before the first one expired",
+  );
+  const [secondTimeoutSession] = await db.select().from(alertSessionsTable).where(and(
+    eq(alertSessionsTable.serviceId, secondTimeoutServiceId),
+    eq(alertSessionsTable.workerId, proMax.id),
+  )).limit(1);
+  assert.ok(secondTimeoutSession?.expiresAt, "the second active alert must have its own expiry deadline");
+  assert.ok(
+    secondTimeoutSession.expiresAt.getTime() > firstTimeoutSession.expiresAt.getTime(),
+    "alerts created at different times must keep independent expiry deadlines",
+  );
+
+  const timeoutSlots = await db.select({ serviceId: workerAlertSlotsTable.serviceId })
+    .from(workerAlertSlotsTable).where(and(
+      eq(workerAlertSlotsTable.workerId, proMax.id),
+      inArray(workerAlertSlotsTable.serviceId, [firstTimeoutServiceId, secondTimeoutServiceId]),
+    ));
+  assert.deepEqual(
+    timeoutSlots.map((slot) => slot.serviceId).sort((a, b) => a - b),
+    [firstTimeoutServiceId, secondTimeoutServiceId].sort((a, b) => a - b),
+    "both timeout alerts must hold independent reservations",
+  );
+
+  await waitUntil(
+    () => expiredEventsByWorker.get(proMax.id)?.some(
+      (event) => event.serviceId === firstTimeoutServiceId,
+    ) ?? false,
+    Math.max(6_000, firstTimeoutSession.expiresAt.getTime() - Date.now() + 6_000),
+    "Pro Max did not receive the first alert's expiration event",
+  );
+  const [expiredFirstTimeoutSession, stillActiveTimeoutSession] = await Promise.all([
+    db.select().from(alertSessionsTable).where(and(
+      eq(alertSessionsTable.serviceId, firstTimeoutServiceId),
+      eq(alertSessionsTable.workerId, proMax.id),
+    )).limit(1).then((rows) => rows[0]),
+    db.select().from(alertSessionsTable).where(and(
+      eq(alertSessionsTable.serviceId, secondTimeoutServiceId),
+      eq(alertSessionsTable.workerId, proMax.id),
+    )).limit(1).then((rows) => rows[0]),
+  ]);
+  assert.equal(expiredFirstTimeoutSession?.response, "skipped");
+  assert.equal(stillActiveTimeoutSession?.response, "pending");
+  assert.equal(
+    expiredEventsByWorker.get(proMax.id)?.some((event) => event.serviceId === secondTimeoutServiceId),
+    false,
+    "expiring one card must not expire another card early",
+  );
+  assert.ok(
+    (await db.select({ serviceId: workerAlertSlotsTable.serviceId })
+      .from(workerAlertSlotsTable).where(and(
+        eq(workerAlertSlotsTable.workerId, proMax.id),
+        eq(workerAlertSlotsTable.serviceId, secondTimeoutServiceId),
+      ))).length,
+    "the second alert reservation must remain active after the first expires",
+  );
+  await waitUntil(
+    () => expiredEventsByWorker.get(proMax.id)?.some(
+      (event) => event.serviceId === secondTimeoutServiceId,
+    ) ?? false,
+    Math.max(6_000, secondTimeoutSession.expiresAt.getTime() - Date.now() + 6_000),
+    "Pro Max did not receive the second alert's independent expiration event",
+  );
+
   const switchedAdmin = await createAccount("Admin en modo experto de prueba", "admin", 4);
   const adminModeOff = await createAccount("Admin fuera del modo experto de prueba", "admin", 5);
   const unavailableAdmin = await createAccount("Admin experto no disponible de prueba", "admin", 6);
@@ -820,7 +1275,168 @@ async function main(): Promise<void> {
     `admin in worker mode could not engage the received alert: ${await adminViewResponse.text()}`,
   );
 
-  console.log("Service alert real-time flow passed: worker tiers, admin worker-mode gating, replay, FIFO queue behavior, and timeout delivery.");
+  const acceptanceWorkers = [
+    await createAccount("Experto aceptación directa", "worker", 11),
+    await createAccount("Experto aceptación de propuesta", "worker", 12),
+    await createAccount("Experto aceptación de contraoferta", "worker", 13),
+  ];
+  const acceptanceCategories: number[] = [];
+  for (const [index, worker] of acceptanceWorkers.entries()) {
+    const [acceptanceCategory] = await db.insert(categoriesTable).values({
+      name: `${PREFIX}: categoría de aceptación ${index + 1}`,
+      platform: "expertos",
+    }).returning({ id: categoriesTable.id });
+    acceptanceCategories.push(acceptanceCategory.id);
+    categoryIds.push(acceptanceCategory.id);
+    await db.insert(workerCategoriesTable).values({
+      workerId: worker.id,
+      categoryId: acceptanceCategory.id,
+      isPrimary: true,
+    });
+    await db.insert(userSubscriptionsTable).values({
+      userId: worker.id,
+      planCode: PROMAX_PLAN,
+      status: "active",
+      interval: "monthly",
+      currentPeriodStart: periodStart,
+      currentPeriodEnd: periodEnd,
+    });
+    await db.update(usersTable).set({
+      visitFee: 100,
+      payoutBankName: "Banco de prueba",
+      payoutBankAccountType: "checking",
+      payoutBankAccountNumber: `test-${worker.id}`,
+      payoutBankRut: `test-${worker.id}`,
+    }).where(eq(usersTable.id, worker.id));
+    socketsByWorker.set(worker.id, await connectWorker(worker));
+  }
+
+  const directAlertIds = await Promise.all([
+    createServiceRequest(client, acceptanceCategories[0], `${PREFIX}: alerta directa uno`),
+    createServiceRequest(client, acceptanceCategories[0], `${PREFIX}: alerta directa dos`),
+  ]);
+  await waitUntil(
+    () => directAlertIds.every((serviceId) =>
+      eventsByWorker.get(acceptanceWorkers[0].id)?.some((event) => event.serviceId === serviceId)
+    ),
+    8_000,
+    "the direct-acceptance expert did not receive both active alert cards",
+  );
+  const directAssignmentId = await createServiceFixture(
+    client,
+    acceptanceCategories[0],
+    `${PREFIX}: trabajo de aceptación directa`,
+    "pending",
+  );
+  const directAcceptResponse = await fetch(`${BASE_URL}/api/services/${directAssignmentId}/accept`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${signToken({
+        id: acceptanceWorkers[0].id,
+        email: acceptanceWorkers[0].email,
+        role: acceptanceWorkers[0].role,
+      })}`,
+    },
+  });
+  assert.equal(
+    directAcceptResponse.status,
+    200,
+    `direct acceptance failed: ${await directAcceptResponse.text()}`,
+  );
+  await assertAssignmentClosesOtherAlerts(
+    client,
+    acceptanceWorkers[0],
+    acceptanceCategories[0],
+    directAssignmentId,
+    directAlertIds,
+  );
+
+  const proposalAlertIds = await Promise.all([
+    createServiceRequest(client, acceptanceCategories[1], `${PREFIX}: alerta de propuesta uno`),
+    createServiceRequest(client, acceptanceCategories[1], `${PREFIX}: alerta de propuesta dos`),
+  ]);
+  await waitUntil(
+    () => proposalAlertIds.every((serviceId) =>
+      eventsByWorker.get(acceptanceWorkers[1].id)?.some((event) => event.serviceId === serviceId)
+    ),
+    8_000,
+    "the proposal-acceptance expert did not receive both active alert cards",
+  );
+  const proposalAssignmentId = await createServiceFixture(
+    client,
+    acceptanceCategories[1],
+    `${PREFIX}: trabajo aceptado desde propuesta`,
+  );
+  const [proposal] = await db.insert(proposalsTable).values({
+    serviceId: proposalAssignmentId,
+    workerId: acceptanceWorkers[1].id,
+    status: "worker_accepted",
+    message: "Propuesta temporal de regresión.",
+  }).returning({ id: proposalsTable.id });
+  const proposalAcceptResponse = await fetch(`${BASE_URL}/api/proposals/${proposal.id}/accept`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${signToken({ id: client.id, email: client.email, role: client.role })}`,
+    },
+  });
+  assert.equal(
+    proposalAcceptResponse.status,
+    200,
+    `proposal acceptance failed: ${await proposalAcceptResponse.text()}`,
+  );
+  await assertAssignmentClosesOtherAlerts(
+    client,
+    acceptanceWorkers[1],
+    acceptanceCategories[1],
+    proposalAssignmentId,
+    proposalAlertIds,
+  );
+
+  const counterAlertIds = await Promise.all([
+    createServiceRequest(client, acceptanceCategories[2], `${PREFIX}: alerta de contraoferta uno`),
+    createServiceRequest(client, acceptanceCategories[2], `${PREFIX}: alerta de contraoferta dos`),
+  ]);
+  await waitUntil(
+    () => counterAlertIds.every((serviceId) =>
+      eventsByWorker.get(acceptanceWorkers[2].id)?.some((event) => event.serviceId === serviceId)
+    ),
+    8_000,
+    "the counter-acceptance expert did not receive both active alert cards",
+  );
+  const counterAssignmentId = await createServiceFixture(
+    client,
+    acceptanceCategories[2],
+    `${PREFIX}: trabajo aceptado desde contraoferta`,
+  );
+  const [counterProposal] = await db.insert(proposalsTable).values({
+    serviceId: counterAssignmentId,
+    workerId: acceptanceWorkers[2].id,
+    status: "countered",
+    lastCounterBy: "worker",
+    message: "Contraoferta temporal de regresión.",
+  }).returning({ id: proposalsTable.id });
+  const counterAcceptResponse = await fetch(`${BASE_URL}/api/proposals/${counterProposal.id}/accept-counter`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${signToken({ id: client.id, email: client.email, role: client.role })}`,
+    },
+  });
+  assert.equal(
+    counterAcceptResponse.status,
+    200,
+    `counter-offer acceptance failed: ${await counterAcceptResponse.text()}`,
+  );
+  await assertAssignmentClosesOtherAlerts(
+    client,
+    acceptanceWorkers[2],
+    acceptanceCategories[2],
+    counterAssignmentId,
+    counterAlertIds,
+  );
+
+  console.log("Service alert real-time flow passed: alert eligibility, concurrent alerts and timers, role gating, replay, and direct/proposal assignment cleanup.");
 }
 
 main()

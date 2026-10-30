@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   canReceiveWorkerAlerts,
+  isWorkerWithinAlertRadius,
   NEARBY_DELAY_MS,
   resolveLatestWorkerPlans,
   splitAlertRecipients,
@@ -47,4 +48,44 @@ assert.equal(
   "an older active free row must not override the newest Pro Max subscription",
 );
 assert.equal(effectivePlans.get(1)?.features.radius_km, -1);
+
+const inRadius = (input: Parameters<typeof isWorkerWithinAlertRadius>[0]) =>
+  isWorkerWithinAlertRadius(input);
+const baseRadiusCase = {
+  isProMax: false,
+  profileRadiusKm: 20,
+  planRadiusKm: 5,
+  distanceKm: 8,
+  hasServiceCoordinates: true,
+};
+assert.equal(
+  inRadius(baseRadiusCase),
+  false,
+  "Pro and free workers must satisfy the plan radius as well as their profile radius",
+);
+assert.equal(
+  inRadius({ ...baseRadiusCase, profileRadiusKm: 5, planRadiusKm: 20 }),
+  false,
+  "Pro and free workers must satisfy their profile radius",
+);
+assert.equal(
+  inRadius({ ...baseRadiusCase, profileRadiusKm: null, planRadiusKm: -1, distanceKm: 100 }),
+  true,
+  "null profile and negative plan radii are unlimited limits",
+);
+assert.equal(
+  inRadius({ ...baseRadiusCase, isProMax: true, profileRadiusKm: 5, planRadiusKm: -1 }),
+  false,
+  "Pro Max uses the profile radius and is not capped by the plan radius",
+);
+assert.equal(
+  inRadius({ ...baseRadiusCase, distanceKm: null }),
+  true,
+  "missing worker coordinates must not exclude an expert",
+);
+assert.equal(
+  inRadius({ ...baseRadiusCase, hasServiceCoordinates: false }),
+  true,
+  "missing service coordinates must not exclude an expert",
+);
 console.log("Service alert recipient selection checks passed");

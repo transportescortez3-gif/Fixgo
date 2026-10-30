@@ -8,7 +8,7 @@ import {
   type SocketAuthStatus,
 } from "@/hooks/use-socket";
 import { useAuth } from "@/hooks/use-auth";
-import { Star, MapPin, Crown, Zap, X, ArrowRight } from "lucide-react";
+import { MapPin, Crown, Zap, X, ArrowRight } from "lucide-react";
 import { ClientIdentity } from "@/components/client-identity";
 import { promptServiceRequestOverlayPermissionIfNeeded } from "@/plugins/service-request-alerts";
 import {
@@ -43,7 +43,12 @@ export default function ServiceAlertModal() {
   // Inicializar desde el módulo para que el remount recupere la cola existente
   const [queue, setQueueState] = useState<QueuedServiceAlert[]>(_moduleQueue);
   const [socketStatus, setSocketStatus] = useState<SocketAuthStatus>(getSocketAuthStatus());
-  const [secondsLeft, setSecondsLeft] = useState(60);
+  const [secondsById, setSecondsById] = useState<Record<number, number>>(() =>
+    Object.fromEntries(_moduleQueue.map((alert) => [
+      alert.serviceId,
+      Math.max(0, Math.floor((alert.expiresAt - Date.now()) / 1000)),
+    ])),
+  );
 
   // Wrapper que sincroniza React state ↔ módulo en cada cambio
   const setQueue = useCallback((fn: QueuedServiceAlert[] | ((prev: QueuedServiceAlert[]) => QueuedServiceAlert[])) => {
@@ -57,10 +62,6 @@ export default function ServiceAlertModal() {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const beepIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
-  const handledRef = useRef(false);
-
-  const currentAlert = queue[0] ?? null;
-  const pendingCount = queue.length - 1;
 
   // ─── Audio ────────────────────────────────────────────────────────────────
   const playBeep = useCallback(() => {
@@ -164,49 +165,46 @@ export default function ServiceAlertModal() {
     };
   }, [isWorker, removeFromQueue]);
 
-  // ─── Countdown ────────────────────────────────────────────────────────────
+  // One shared ticker keeps every card's original expiry independent. Removing
+  // one alert never restarts another alert's timer or the shared audio session.
   useEffect(() => {
-    if (!currentAlert) {
-      stopAudio(); stopCountdown(); handledRef.current = false; return;
+    if (queue.length === 0) {
+      stopAudio();
+      stopCountdown();
+      setSecondsById({});
+      return;
     }
-    handledRef.current = false;
-    const computeLeft = () => Math.max(0, Math.floor((currentAlert.expiresAt - Date.now()) / 1000));
-    setSecondsLeft(computeLeft());
+
     startAudio();
     if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
-    stopCountdown();
-    countdownRef.current = setInterval(() => {
-      const left = computeLeft();
-      setSecondsLeft(left);
-      if (left <= 0) { stopCountdown(); stopAudio(); handleSkip(currentAlert.serviceId); }
-    }, 500);
-    return () => { stopCountdown(); };
-  }, [currentAlert?.serviceId, currentAlert?.expiresAt]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
+    const updateCountdowns = () => {
       const now = Date.now();
-      setQueue(prev => prev.filter(a => a.expiresAt > now));
-    }, 2000);
-    return () => clearInterval(interval);
-  }, []);
+      const next: Record<number, number> = {};
+      for (const alert of _moduleQueue) {
+        const left = Math.max(0, Math.floor((alert.expiresAt - now) / 1000));
+        next[alert.serviceId] = left;
+        if (left <= 0) void handleSkip(alert.serviceId);
+      }
+      setSecondsById(next);
+    };
+    updateCountdowns();
+    stopCountdown();
+    countdownRef.current = setInterval(updateCountdowns, 500);
+    return () => stopCountdown();
+  }, [queue.length > 0, handleSkip, startAudio, stopAudio, stopCountdown]);
+
+  useEffect(() => () => {
+    stopCountdown();
+    stopAudio();
+  }, [stopAudio, stopCountdown]);
 
   // ─── Render ───────────────────────────────────────────────────────────────
-  const isProMax = currentAlert?.phase === "promax";
-  const totalSec = currentAlert?.totalSeconds ?? 60;
-  const progress = currentAlert ? Math.max(0, Math.min(1, secondsLeft / totalSec)) : 1;
-  const isUrgent = secondsLeft <= 10;
-
   // Colores según plan y urgencia
   const amber = "#f59e0b";
   const blue  = "#1a8cf8";
   const red   = "#ef4444";
-  const mainColor = isUrgent ? red : isProMax ? amber : blue;
-
-  // Timer circular
   const R = 18;
   const circ = 2 * Math.PI * R;
-  const dash = circ * (1 - progress);
 
   return (
     <AnimatePresence>
@@ -226,7 +224,7 @@ export default function ServiceAlertModal() {
             : "Conexión interrumpida. Intentando reconectar para recibir trabajos…"}
         </motion.div>
       )}
-      {currentAlert && (
+      {queue.length > 0 && (
         <>
           {/* Backdrop */}
           <motion.div
@@ -237,26 +235,30 @@ export default function ServiceAlertModal() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            onClick={() => handleSkip(currentAlert.serviceId)}
+            onClick={() => handleSkip(queue[0].serviceId)}
           />
 
-          {/* Tarjeta */}
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={currentAlert.serviceId}
-              className="fixed z-[9999]"
-              style={{
-                top: 12,
-                left: 12,
-                right: 12,
-                maxWidth: 420,
-                margin: "0 auto",
-              }}
-              initial={{ y: -100, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: -100, opacity: 0 }}
-              transition={{ type: "spring", stiffness: 420, damping: 34, mass: 0.75 }}
-            >
+          {/* Todas las solicitudes activas permanecen visibles y desplazables. */}
+          <div className="fixed inset-0 z-[9999] overflow-y-auto overscroll-contain px-3 py-3 sm:px-6 sm:py-6">
+            <div className="mx-auto grid w-full max-w-5xl grid-cols-1 items-start gap-3 sm:grid-cols-2 sm:gap-4">
+              <AnimatePresence initial={false}>
+                {queue.map((alert) => {
+                  const secondsLeft = secondsById[alert.serviceId] ?? Math.max(0, Math.floor((alert.expiresAt - Date.now()) / 1000));
+                  const isProMax = alert.phase === "promax";
+                  const isUrgent = secondsLeft <= 10;
+                  const totalSec = alert.totalSeconds ?? 60;
+                  const progress = Math.max(0, Math.min(1, secondsLeft / totalSec));
+                  const mainColor = isUrgent ? red : isProMax ? amber : blue;
+                  const dash = circ * (1 - progress);
+                  return (
+                    <motion.div
+                      key={alert.serviceId}
+                      className="relative w-full"
+                      initial={{ y: -24, opacity: 0 }}
+                      animate={{ y: 0, opacity: 1 }}
+                      exit={{ y: -24, opacity: 0 }}
+                      transition={{ type: "spring", stiffness: 420, damping: 34, mass: 0.75 }}
+                    >
               {/* Glow exterior */}
               <div
                 className="absolute inset-0 rounded-3xl pointer-events-none"
@@ -309,21 +311,10 @@ export default function ServiceAlertModal() {
                       </div>
                     )}
 
-                    {pendingCount > 0 && (
-                      <span
-                        className="text-[10px] font-bold px-2 py-0.5 rounded-full"
-                        style={{
-                          background: "rgba(255,255,255,0.07)",
-                          color: "rgba(255,255,255,0.5)",
-                        }}
-                      >
-                        +{pendingCount} más
-                      </span>
-                    )}
                   </div>
 
                   <button
-                    onClick={() => handleSkip(currentAlert.serviceId)}
+                    onClick={() => handleSkip(alert.serviceId)}
                     className="w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90"
                     style={{ background: "rgba(255,255,255,0.07)" }}
                   >
@@ -361,7 +352,7 @@ export default function ServiceAlertModal() {
                         Trabajo solicitado
                       </p>
                       <h2 className="text-lg font-black text-white leading-snug line-clamp-2">
-                        {currentAlert.title}
+                        {alert.title}
                       </h2>
                     </div>
                   </div>
@@ -388,8 +379,8 @@ export default function ServiceAlertModal() {
                     }}
                   >
                     <ClientIdentity
-                      name={currentAlert.clientName}
-                      score={currentAlert.convivenciaScore}
+                      name={alert.clientName}
+                      score={alert.convivenciaScore}
                       variant="modal"
                     />
 
@@ -400,19 +391,19 @@ export default function ServiceAlertModal() {
                     >
                       <MapPin className="w-3 h-3 shrink-0" style={{ color: mainColor }} />
                       <span className="text-xs font-bold tabular-nums" style={{ color: mainColor }}>
-                        {currentAlert.distanceKm != null ? `${currentAlert.distanceKm} km` : "—"}
+                        {alert.distanceKm != null ? `${alert.distanceKm} km` : "—"}
                       </span>
                     </div>
                   </div>
 
                   {/* Bloque precio sugerido (solo PRO+ con presupuesto) */}
-                  {isProMax && currentAlert.budgetNote && (
+                  {isProMax && alert.budgetNote && (
                     <div
                       className="flex flex-col gap-0.5 px-3 py-2.5 rounded-2xl mb-3"
                       style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)" }}
                     >
                       <span className="text-[12px] text-amber-300 font-bold">
-                        💰 Precio sugerido del cliente: {currentAlert.budgetNote}
+                        💰 Precio sugerido del cliente: {alert.budgetNote}
                       </span>
                       <span className="text-[10px] text-amber-300/60">
                         (Valor Referencial propuesto por el usuario)
@@ -425,7 +416,7 @@ export default function ServiceAlertModal() {
 
                   {/* Botón CTA principal */}
                   <motion.button
-                    onClick={() => handleView(currentAlert.serviceId)}
+                    onClick={() => handleView(alert.serviceId)}
                     className="w-full py-4 rounded-2xl font-black text-base text-white flex items-center justify-center gap-2 mb-2"
                     style={{
                       background: isProMax
@@ -444,16 +435,20 @@ export default function ServiceAlertModal() {
 
                   {/* Omitir */}
                   <button
-                    onClick={() => handleSkip(currentAlert.serviceId)}
+                    onClick={() => handleSkip(alert.serviceId)}
                     className="w-full py-2.5 text-sm font-semibold rounded-2xl transition-colors"
                     style={{ color: "rgba(255,255,255,0.3)" }}
                   >
-                    {pendingCount > 0 ? `Omitir — ver siguiente (+${pendingCount})` : "Omitir"}
+                    Omitir solicitud
                   </button>
                 </div>
               </div>
-            </motion.div>
-          </AnimatePresence>
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
+            </div>
+          </div>
         </>
       )}
     </AnimatePresence>

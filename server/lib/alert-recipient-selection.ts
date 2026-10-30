@@ -46,3 +46,20 @@ export function splitAlertRecipients<T extends { isProMax: boolean }>(
     nearbyWorkers: qualifiedWorkers.filter((worker) => !worker.isProMax),
   };
 }
+
+export function isWorkerWithinAlertRadius(input: {
+  isProMax: boolean;
+  profileRadiusKm: number | null;
+  planRadiusKm: number;
+  distanceKm: number | null;
+  hasServiceCoordinates: boolean;
+}): boolean {
+  const { isProMax, profileRadiusKm, planRadiusKm, distanceKm, hasServiceCoordinates } = input;
+  if (!hasServiceCoordinates || distanceKm === null) return true;
+
+  const withinProfileRadius = profileRadiusKm === null || distanceKm <= profileRadiusKm;
+  if (isProMax) return withinProfileRadius;
+
+  const withinPlanRadius = planRadiusKm < 0 || distanceKm <= planRadiusKm;
+  return withinProfileRadius && withinPlanRadius;
+}

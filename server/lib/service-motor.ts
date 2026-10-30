@@ -6,6 +6,7 @@ import { emitToWorkers, emitToUser, emitToService, isAdminInWorkerMode } from ".
 import { createNotification, createNotifications } from "./createNotification";
 import { logger } from "./logger";
 import {
+  isWorkerWithinAlertRadius,
   NEARBY_DELAY_MS,
   resolveLatestWorkerPlans,
   splitAlertRecipients,
@@ -80,11 +81,36 @@ async function getClientInfo(clientId: number) {
 }
 
 /**
- * Atomically reserves the worker's single alert slot and delivers the oldest
- * currently-valid queued request. A pending slot represents an unread alert;
- * an engaged slot remains held while the worker reviews or negotiates.
+ * Atomically reserves one worker/service alert slot. Calls without a target
+ * service dispatch every currently eligible pending request.
  */
-export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean> {
+export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?: number): Promise<boolean> {
+  if (targetServiceId === undefined) {
+    const now = new Date();
+    const pending = await db.select({ serviceId: alertSessionsTable.serviceId })
+      .from(alertSessionsTable)
+      .innerJoin(servicesTable, eq(servicesTable.id, alertSessionsTable.serviceId))
+      .where(and(
+        eq(alertSessionsTable.workerId, workerId),
+        eq(alertSessionsTable.response, "pending"),
+        isNull(alertSessionsTable.deliveredAt),
+        lte(alertSessionsTable.availableAt, now),
+        gt(alertSessionsTable.expiresAt, now),
+        or(
+          eq(servicesTable.status, "alerting"),
+          and(
+            eq(servicesTable.status, "pending"),
+            eq(servicesTable.directWorkerId, workerId),
+          ),
+        ),
+      ))
+      .orderBy(asc(alertSessionsTable.availableAt), asc(alertSessionsTable.id));
+    const delivered = await Promise.all(
+      pending.map(({ serviceId }) => dispatchNextQueuedAlert(workerId, serviceId)),
+    );
+    return delivered.some(Boolean);
+  }
+
   const now = new Date();
   const dispatchResult = await db.transaction(async (tx) => {
     const [worker] = await tx.select({
@@ -93,7 +119,7 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
       status: usersTable.status,
       alertCooldownUntil: usersTable.alertCooldownUntil,
       suspendedUntil: usersTable.suspendedUntil,
-    }).from(usersTable).where(eq(usersTable.id, workerId)).limit(1);
+    }).from(usersTable).where(eq(usersTable.id, workerId)).for("update").limit(1);
 
     if (
       !worker ||
@@ -111,12 +137,19 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
         inArray(servicesTable.status, ["accepted", "in_progress"]),
       ))
       .limit(1);
-    if (assignedServices.length > 0) return null;
+    if (assignedServices.length > 0) {
+      return {
+        dispatch: null,
+        expiredServiceIds: [] as number[],
+        busyServiceId: assignedServices[0].id,
+      };
+    }
 
     const expiredSessions = await tx.update(alertSessionsTable)
       .set({ response: "skipped", respondedAt: now })
       .where(and(
         eq(alertSessionsTable.workerId, workerId),
+        eq(alertSessionsTable.serviceId, targetServiceId),
         eq(alertSessionsTable.response, "pending"),
         isNull(alertSessionsTable.deliveredAt),
         lte(alertSessionsTable.expiresAt, now),
@@ -142,6 +175,7 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
       .innerJoin(servicesTable, eq(servicesTable.id, alertSessionsTable.serviceId))
       .where(and(
         eq(alertSessionsTable.workerId, workerId),
+        eq(alertSessionsTable.serviceId, targetServiceId),
         eq(alertSessionsTable.response, "pending"),
         isNull(alertSessionsTable.deliveredAt),
         lte(alertSessionsTable.availableAt, now),
@@ -170,7 +204,10 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
       state: "pending",
       deliveryId,
       updatedAt: now,
-    }).onConflictDoNothing().returning({ workerId: workerAlertSlotsTable.workerId });
+    }).onConflictDoNothing().returning({
+      workerId: workerAlertSlotsTable.workerId,
+      serviceId: workerAlertSlotsTable.serviceId,
+    });
     if (!slot) return { dispatch: null, expiredServiceIds };
 
     const [session] = await tx.update(alertSessionsTable)
@@ -185,7 +222,10 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
       .returning({ id: alertSessionsTable.id });
 
     if (!session) {
-      await tx.delete(workerAlertSlotsTable).where(eq(workerAlertSlotsTable.workerId, workerId));
+      await tx.delete(workerAlertSlotsTable).where(and(
+        eq(workerAlertSlotsTable.workerId, workerId),
+        eq(workerAlertSlotsTable.serviceId, candidate.serviceId),
+      ));
       return { dispatch: null, expiredServiceIds };
     }
 
@@ -196,52 +236,86 @@ export async function dispatchNextQueuedAlert(workerId: number): Promise<boolean
   for (const serviceId of dispatchResult.expiredServiceIds) {
     await checkAllResponded(serviceId);
   }
+  if (dispatchResult.busyServiceId) {
+    await invalidateOtherWorkerAlerts(workerId, dispatchResult.busyServiceId);
+    return false;
+  }
   const dispatch = dispatchResult.dispatch;
   if (!dispatch) return false;
 
-  // Do not emit an alert if the reservation was already invalidated by a
-  // concurrent assignment/cancellation while this transaction was committing.
-  const [current] = await db.select({
-    status: servicesTable.status,
-    clientId: servicesTable.clientId,
-    isDirectRequest: servicesTable.isDirectRequest,
-    directWorkerId: servicesTable.directWorkerId,
-  }).from(servicesTable).where(eq(servicesTable.id, dispatch.serviceId)).limit(1);
-  const [slot] = await db.select({ serviceId: workerAlertSlotsTable.serviceId })
-    .from(workerAlertSlotsTable).where(eq(workerAlertSlotsTable.workerId, workerId)).limit(1);
-  if (!current || slot?.serviceId !== dispatch.serviceId ||
-      (current.status !== "alerting" &&
-        !(current.status === "pending" && current.isDirectRequest && current.directWorkerId === workerId))) {
-    await db.update(alertSessionsTable)
-      .set({ response: "skipped", respondedAt: new Date() })
-      .where(and(
-        eq(alertSessionsTable.serviceId, dispatch.serviceId),
-        eq(alertSessionsTable.workerId, workerId),
-        eq(alertSessionsTable.response, "pending"),
-      ));
-    await db.delete(workerAlertSlotsTable).where(and(
-      eq(workerAlertSlotsTable.workerId, workerId),
-      eq(workerAlertSlotsTable.serviceId, dispatch.serviceId),
-    ));
-    return false;
-  }
-
-  const client = await getClientInfo(current.clientId);
+  const client = await getClientInfo(dispatch.clientId);
   const distanceKm = dispatch.distanceKm == null ? null : Math.round(dispatch.distanceKm * 10) / 10;
   const remainingSeconds = Math.max(1, Math.ceil((dispatch.expiresAt.getTime() - Date.now()) / 1000));
   const phase = dispatch.phase === "promax" ? "promax" : "nearby";
 
-  emitToUser(workerId, "service:active_alert", {
-    serviceId: dispatch.serviceId,
-    deliveryId: dispatch.deliveryId,
-    title: dispatch.title,
-    clientName: client?.name ?? "Cliente",
-    convivenciaScore: client?.clientRating ?? null,
-    distanceKm,
-    phase,
-    totalSeconds: remainingSeconds,
-    budgetNote: phase === "promax" ? (dispatch.budgetNote ?? null) : null,
+  // Serialize the final validation and socket emit with assignment cleanup.
+  // If an assignment won while the reservation was being created, its cleanup
+  // will either have removed this slot already or will run immediately after
+  // this emit and remove the card from the client.
+  const emitted = await db.transaction(async (tx) => {
+    await tx.select({ id: usersTable.id })
+      .from(usersTable)
+      .where(eq(usersTable.id, workerId))
+      .for("update")
+      .limit(1);
+
+    const assigned = await tx.select({ id: servicesTable.id })
+      .from(servicesTable)
+      .where(and(
+        eq(servicesTable.workerId, workerId),
+        inArray(servicesTable.status, ["accepted", "in_progress"]),
+      ))
+      .limit(1);
+    if (assigned.length > 0) {
+      return { sent: false, busyServiceId: assigned[0].id };
+    }
+
+    const [current] = await tx.select({
+      status: servicesTable.status,
+      clientId: servicesTable.clientId,
+      isDirectRequest: servicesTable.isDirectRequest,
+      directWorkerId: servicesTable.directWorkerId,
+    }).from(servicesTable).where(eq(servicesTable.id, dispatch.serviceId)).limit(1);
+    const [slot] = await tx.select({ serviceId: workerAlertSlotsTable.serviceId })
+      .from(workerAlertSlotsTable).where(and(
+        eq(workerAlertSlotsTable.workerId, workerId),
+        eq(workerAlertSlotsTable.serviceId, dispatch.serviceId),
+      )).limit(1);
+    if (!current || slot?.serviceId !== dispatch.serviceId ||
+        (current.status !== "alerting" &&
+          !(current.status === "pending" && current.isDirectRequest && current.directWorkerId === workerId))) {
+      await tx.update(alertSessionsTable)
+        .set({ response: "skipped", respondedAt: new Date() })
+        .where(and(
+          eq(alertSessionsTable.serviceId, dispatch.serviceId),
+          eq(alertSessionsTable.workerId, workerId),
+          eq(alertSessionsTable.response, "pending"),
+        ));
+      await tx.delete(workerAlertSlotsTable).where(and(
+        eq(workerAlertSlotsTable.workerId, workerId),
+        eq(workerAlertSlotsTable.serviceId, dispatch.serviceId),
+      ));
+      return { sent: false };
+    }
+
+    emitToUser(workerId, "service:active_alert", {
+      serviceId: dispatch.serviceId,
+      deliveryId: dispatch.deliveryId,
+      title: dispatch.title,
+      clientName: client?.name ?? "Cliente",
+      convivenciaScore: client?.clientRating ?? null,
+      distanceKm,
+      phase,
+      totalSeconds: remainingSeconds,
+      budgetNote: phase === "promax" ? (dispatch.budgetNote ?? null) : null,
+    });
+    return { sent: true };
   });
+  if (emitted.busyServiceId) {
+    await invalidateOtherWorkerAlerts(workerId, emitted.busyServiceId);
+    return false;
+  }
+  if (!emitted.sent) return false;
   logger.info({
     serviceId: dispatch.serviceId,
     workerId,
@@ -410,26 +484,27 @@ export async function reconcileWorkerAlertState(
   workerId: number,
   activeServiceId: number | null,
 ): Promise<void> {
-  const [slot] = await db.select({
+  const slots = await db.select({
     serviceId: workerAlertSlotsTable.serviceId,
     state: workerAlertSlotsTable.state,
   })
     .from(workerAlertSlotsTable)
     .where(eq(workerAlertSlotsTable.workerId, workerId))
-    .limit(1);
+    .orderBy(asc(workerAlertSlotsTable.updatedAt));
 
-  if (!slot) {
+  if (slots.length === 0) {
     await dispatchNextQueuedAlert(workerId);
     return;
   }
 
-  if (slot.state === "pending") {
+  if (slots.some((slot) => slot.state === "pending")) {
     await reemitActiveAlertsForWorker(workerId);
-    return;
   }
 
-  let keepEngagedSlot = false;
-  if (slot.serviceId === activeServiceId) {
+  for (const slot of slots) {
+    if (slot.state !== "engaged") continue;
+    let keepEngagedSlot = false;
+    if (slot.serviceId === activeServiceId) {
     const [service] = await db.select({
       status: servicesTable.status,
       workerId: servicesTable.workerId,
@@ -449,8 +524,9 @@ export async function reconcileWorkerAlertState(
     );
   }
 
-  if (!keepEngagedSlot) {
-    await releaseWorkerAlertSlot(workerId, slot.serviceId);
+    if (!keepEngagedSlot) {
+      await releaseWorkerAlertSlot(workerId, slot.serviceId);
+    }
   }
 }
 
@@ -673,7 +749,7 @@ async function launchCombinedActivePhase(
 
   // Sin coordenadas no podemos filtrar por distancia: todos los workers de la
   // categoría son elegibles (no sabemos dónde está el servicio).
-  const hasCoords = !!(service.lat && service.lng);
+  const hasCoords = service.lat != null && service.lng != null;
   const now = new Date();
 
   // Obtener el radio y las funciones de prioridad de cada plan activo.
@@ -709,6 +785,7 @@ async function launchCombinedActivePhase(
       lat: usersTable.lat,
       lng: usersTable.lng,
       role: usersTable.role,
+      alertRadiusKm: usersTable.alertRadiusKm,
     })
     .from(usersTable)
     .innerJoin(workerCategoriesTable, eq(workerCategoriesTable.workerId, usersTable.id))
@@ -726,8 +803,20 @@ async function launchCombinedActivePhase(
     worker,
     activeAsWorker: await isActiveWorkerRecipient(worker.id, worker.role),
   })));
+  const assignedRows = await db.select({ workerId: servicesTable.workerId })
+    .from(servicesTable)
+    .where(and(
+      inArray(servicesTable.status, ["accepted", "in_progress"]),
+      isNotNull(servicesTable.workerId),
+    ));
+  const assignedWorkerIds = new Set(assignedRows.map((row) => row.workerId));
+
+  const excludedAssigned = activeRoleCandidates.filter(
+    (candidate) => candidate.activeAsWorker && assignedWorkerIds.has(candidate.worker.id),
+  ).length;
   const eligibleWorkers = activeRoleCandidates
     .filter((candidate) => candidate.activeAsWorker)
+    .filter((candidate) => !assignedWorkerIds.has(candidate.worker.id))
     .map((candidate) => candidate.worker);
 
   logger.info({ serviceId, eligibleWorkers: eligibleWorkers.length }, "motor: eligible workers found");
@@ -736,29 +825,31 @@ async function launchCombinedActivePhase(
   //  - Sin coordenadas en el servicio: TODOS los workers de la categoría califican
   //    (no sabemos la distancia, así que no podemos excluir a nadie).
   //  - Con coordenadas:
-  //    · Pro Max → dentro de alertRadiusKm (o ilimitado si no tiene radio)
-  //    · No Pro Max → dentro de NEARBY_RADIUS_KM
-  const rankedCandidates = eligibleWorkers
+  //    · Pro Max → dentro del radio personal
+  //    · Pro/Gratis → dentro del radio personal y del límite del plan
+  const candidateWorkers = eligibleWorkers
     .map(w => {
       const distKm =
-        hasCoords && w.lat && w.lng
+        hasCoords && w.lat != null && w.lng != null
           ? haversineKm(w.lat, w.lng, service.lat!, service.lng!)
           : null;
        const plan = workerPlans.get(w.id);
        const isProMax = plan ? PROMAX_PLAN_CODES.includes(plan.planCode) : false;
-       const planRadius = typeof plan?.features.radius_km === "number" ? plan.features.radius_km : 5;
-       const isUnlimited = planRadius < 0;
-       const isNearby = !hasCoords || isUnlimited || (distKm !== null && distKm <= planRadius);
-       // Pro+ recibe la posición prioritaria; su radio también es ilimitado.
-       const withinProMaxRadius = isProMax && (
-        !hasCoords ||                         // sin coords del servicio → incluir
-         isUnlimited ||
-        distKm === null ||                    // sin coords del worker → incluir
-         distKm <= planRadius
-      );
+        const planRadius = typeof plan?.features.radius_km === "number" ? plan.features.radius_km : 5;
+        const profileRadius = w.alertRadiusKm;
+        const withinAlertRadius = isWorkerWithinAlertRadius({
+          isProMax,
+          profileRadiusKm: profileRadius,
+          planRadiusKm: planRadius,
+          distanceKm: distKm,
+          hasServiceCoordinates: hasCoords,
+        });
+        const isNearby = !isProMax && withinAlertRadius;
+        const withinProMaxRadius = isProMax && withinAlertRadius;
       return { ...w, distKm, isProMax, isNearby, withinProMaxRadius };
     })
-    .filter(w => w.withinProMaxRadius || w.isNearby)
+  const rankedCandidates = candidateWorkers
+    .filter(w => w.isProMax ? w.withinProMaxRadius : w.isNearby)
     // Ordenar: Pro Max primero, luego por distancia
     .sort((a, b) => {
       if (a.isProMax && !b.isProMax) return -1;
@@ -772,6 +863,15 @@ async function launchCombinedActivePhase(
     serviceId,
     eligibleWorkers: eligibleWorkers.length,
     excludedByRadius: eligibleWorkers.length - rankedCandidates.length,
+    proMaxRadiusDiagnostics: candidateWorkers
+      .filter((worker) => worker.isProMax)
+      .map((worker) => ({
+        id: worker.id,
+        profileRadiusKm: worker.alertRadiusKm,
+        distanceKm: worker.distKm,
+        included: worker.withinProMaxRadius,
+        reason: worker.withinProMaxRadius ? "eligible" : "outside_profile_radius",
+      })),
   }, "motor: radius filter diagnostics");
 
   const { proMaxWorkers, nearbyWorkers } = splitAlertRecipients(rankedCandidates);
@@ -780,6 +880,8 @@ async function launchCombinedActivePhase(
   logger.info({
     serviceId,
     qualified: qualified.map(w => ({ id: w.id, isProMax: w.isProMax, distKm: w.distKm })),
+    excludedAssigned,
+    excludedByRadius: eligibleWorkers.length - rankedCandidates.length,
   }, "motor: qualified workers for active alert");
 
   if (qualified.length === 0) {
@@ -835,9 +937,9 @@ async function launchCombinedActivePhase(
 
   // La fila de sesión ya está persistida; la reserva única decide quién recibe
   // la alerta ahora y quién queda en cola hasta liberar su negociación actual.
-  for (const worker of proMaxWorkers) {
-    await dispatchNextQueuedAlert(worker.id);
-  }
+  await Promise.all(
+    proMaxWorkers.map((worker) => dispatchNextQueuedAlert(worker.id, serviceId)),
+  );
 
   // ── Fase 1b: Pro y Gratis cercanos reciben la alerta 10s después ─────────
   if (nearbyWorkers.length > 0) {
@@ -856,9 +958,9 @@ async function launchCombinedActivePhase(
         }
 
         logger.info({ serviceId, nearbyCount: nearbyWorkers.length }, "motor: emitting delayed alert to nearby workers");
-        for (const worker of nearbyWorkers) {
-          await dispatchNextQueuedAlert(worker.id);
-        }
+        await Promise.all(
+          nearbyWorkers.map((worker) => dispatchNextQueuedAlert(worker.id, serviceId)),
+        );
       } catch (err) {
         logger.error({ err, serviceId }, "motor: error in nearby delay alert");
       }
@@ -931,7 +1033,7 @@ export async function handleWorkerView(serviceId: number, workerId: number): Pro
       role: usersTable.role,
       status: usersTable.status,
       isAvailable: usersTable.isAvailable,
-    }).from(usersTable).where(eq(usersTable.id, workerId)).limit(1);
+    }).from(usersTable).where(eq(usersTable.id, workerId)).for("update").limit(1);
     if (
       !worker ||
       !(await isActiveWorkerRecipient(workerId, worker.role)) ||
@@ -959,9 +1061,11 @@ export async function handleWorkerView(serviceId: number, workerId: number): Pro
 
     const [existingSlot] = await tx.select()
       .from(workerAlertSlotsTable)
-      .where(eq(workerAlertSlotsTable.workerId, workerId))
+      .where(and(
+        eq(workerAlertSlotsTable.workerId, workerId),
+        eq(workerAlertSlotsTable.serviceId, serviceId),
+      ))
       .limit(1);
-    if (existingSlot && existingSlot.serviceId !== serviceId) return false;
 
     const [session] = await tx.select()
       .from(alertSessionsTable)
@@ -1183,14 +1287,68 @@ export async function transitionToPassive(serviceId: number): Promise<void> {
 
 export async function handleServiceTaken(serviceId: number, winnerWorkerId: number): Promise<void> {
   // Cooldown de 1 hora para el ganador (evita spam, pero permite recibir nuevos trabajos rápido)
-  const cooldownUntil = new Date(Date.now() + 60 * 60 * 1000);
-  await db
-    .update(usersTable)
-    .set({ alertCooldownUntil: cooldownUntil })
-    .where(eq(usersTable.id, winnerWorkerId));
+  await invalidateOtherWorkerAlerts(
+    winnerWorkerId,
+    serviceId,
+    new Date(Date.now() + 60 * 60 * 1000),
+  );
 
   emitToService(serviceId, "service:taken", { serviceId });
   await handleServiceTerminal(serviceId, winnerWorkerId);
+}
+
+/**
+ * Close every other active alert and reservation for this worker. Dispatch,
+ * replay and assignment paths serialize on the worker row so a reservation
+ * cannot survive an assignment and later be emitted as a stale card.
+ */
+async function invalidateOtherWorkerAlerts(
+  workerId: number,
+  keepServiceId: number,
+  cooldownUntil?: Date,
+): Promise<void> {
+  const invalidatedServices = await db.transaction(async (tx) => {
+    await tx.select({ id: usersTable.id })
+      .from(usersTable)
+      .where(eq(usersTable.id, workerId))
+      .for("update")
+      .limit(1);
+
+    if (cooldownUntil) {
+      await tx.update(usersTable)
+        .set({ alertCooldownUntil: cooldownUntil })
+        .where(eq(usersTable.id, workerId));
+    }
+
+    const skippedSessions = await tx.update(alertSessionsTable)
+      .set({ response: "skipped", respondedAt: new Date() })
+      .where(and(
+        eq(alertSessionsTable.workerId, workerId),
+        inArray(alertSessionsTable.response, ["pending", "viewed"]),
+        sql`${alertSessionsTable.serviceId} <> ${keepServiceId}`,
+      ))
+      .returning({ serviceId: alertSessionsTable.serviceId });
+    const releasedSlots = await tx.delete(workerAlertSlotsTable)
+      .where(and(
+        eq(workerAlertSlotsTable.workerId, workerId),
+        sql`${workerAlertSlotsTable.serviceId} <> ${keepServiceId}`,
+      ))
+      .returning({ serviceId: workerAlertSlotsTable.serviceId });
+
+    return [...new Set([
+      ...skippedSessions.map((session) => session.serviceId),
+      ...releasedSlots.map((slot) => slot.serviceId),
+    ])];
+  });
+
+  for (const otherServiceId of invalidatedServices) {
+    const key = timerKey(otherServiceId, workerId);
+    const timer = alertTimers.get(key);
+    if (timer) clearTimeout(timer);
+    alertTimers.delete(key);
+    emitToUser(workerId, "service:taken", { serviceId: otherServiceId });
+    await checkAllResponded(otherServiceId);
+  }
 }
 
 /** Called after cancellation/completion commits, so only one winner releases the queue. */
@@ -1205,28 +1363,33 @@ export function clearServiceAlertTimers(serviceId: number): void {
 }
 
 export async function pauseWorkerAlertQueue(workerId: number): Promise<void> {
-  const [slot] = await db.select()
+  const slots = await db.select()
     .from(workerAlertSlotsTable)
-    .where(eq(workerAlertSlotsTable.workerId, workerId))
-    .limit(1);
-  if (!slot || slot.state !== "pending") return;
-
-  const key = timerKey(slot.serviceId, workerId);
-  const timer = alertTimers.get(key);
-  if (timer) {
-    clearTimeout(timer);
-    alertTimers.delete(key);
-  }
-  await db.update(alertSessionsTable)
-    .set({ response: "skipped", respondedAt: new Date() })
     .where(and(
-      eq(alertSessionsTable.serviceId, slot.serviceId),
-      eq(alertSessionsTable.workerId, workerId),
-      eq(alertSessionsTable.response, "pending"),
+      eq(workerAlertSlotsTable.workerId, workerId),
+      eq(workerAlertSlotsTable.state, "pending"),
     ));
-  await db.delete(workerAlertSlotsTable).where(eq(workerAlertSlotsTable.workerId, workerId));
-  emitToUser(workerId, "service:alert_expired", { serviceId: slot.serviceId });
-  await checkAllResponded(slot.serviceId);
+  for (const slot of slots) {
+    const key = timerKey(slot.serviceId, workerId);
+    const timer = alertTimers.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      alertTimers.delete(key);
+    }
+    await db.update(alertSessionsTable)
+      .set({ response: "skipped", respondedAt: new Date() })
+      .where(and(
+        eq(alertSessionsTable.serviceId, slot.serviceId),
+        eq(alertSessionsTable.workerId, workerId),
+        eq(alertSessionsTable.response, "pending"),
+      ));
+    await db.delete(workerAlertSlotsTable).where(and(
+      eq(workerAlertSlotsTable.workerId, workerId),
+      eq(workerAlertSlotsTable.serviceId, slot.serviceId),
+    ));
+    emitToUser(workerId, "service:alert_expired", { serviceId: slot.serviceId });
+    await checkAllResponded(slot.serviceId);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1248,15 +1411,28 @@ export async function reemitActiveAlertsForWorker(workerId: number): Promise<voi
       !worker.isAvailable
     ) return;
 
-    const [slot] = await db.select()
+    const [assignedService] = await db.select({ id: servicesTable.id })
+      .from(servicesTable)
+      .where(and(
+        eq(servicesTable.workerId, workerId),
+        inArray(servicesTable.status, ["accepted", "in_progress"]),
+      ))
+      .limit(1);
+    if (assignedService) {
+      await invalidateOtherWorkerAlerts(workerId, assignedService.id);
+      return;
+    }
+
+    const slots = await db.select()
       .from(workerAlertSlotsTable)
       .where(eq(workerAlertSlotsTable.workerId, workerId))
-      .limit(1);
-    if (!slot) {
+      .orderBy(asc(workerAlertSlotsTable.updatedAt));
+    if (slots.length === 0) {
       await dispatchNextQueuedAlert(workerId);
       return;
     }
-    if (slot.state !== "pending") return;
+    for (const slot of slots) {
+    if (slot.state !== "pending") continue;
 
     const [active] = await db.select({
       sessionId: alertSessionsTable.id,
@@ -1294,25 +1470,68 @@ export async function reemitActiveAlertsForWorker(workerId: number): Promise<voi
           eq(alertSessionsTable.workerId, workerId),
           eq(alertSessionsTable.response, "pending"),
         ));
-      await db.delete(workerAlertSlotsTable).where(eq(workerAlertSlotsTable.workerId, workerId));
+      await db.delete(workerAlertSlotsTable).where(and(
+        eq(workerAlertSlotsTable.workerId, workerId),
+        eq(workerAlertSlotsTable.serviceId, slot.serviceId),
+      ));
       await dispatchNextQueuedAlert(workerId);
       if (active) await checkAllResponded(active.serviceId);
-      return;
+      continue;
     }
 
     const client = await getClientInfo(active.clientId);
     const distanceKm = active.distanceKm == null ? null : Math.round(active.distanceKm * 10) / 10;
-    emitToUser(workerId, "service:active_alert", {
-      serviceId: active.serviceId,
-      deliveryId: slot.deliveryId,
-      title: active.title,
-      clientName: client?.name ?? "Cliente",
-      convivenciaScore: client?.clientRating ?? null,
-      distanceKm,
-      phase: active.phase === "promax" ? "promax" : "nearby",
-      totalSeconds: Math.max(1, Math.ceil((active.expiresAt.getTime() - Date.now()) / 1000)),
-      budgetNote: active.phase === "promax" ? (active.budgetNote ?? null) : null,
+    const replayed = await db.transaction(async (tx) => {
+      await tx.select({ id: usersTable.id })
+        .from(usersTable)
+        .where(eq(usersTable.id, workerId))
+        .for("update")
+        .limit(1);
+
+      const [assigned] = await tx.select({ id: servicesTable.id })
+        .from(servicesTable)
+        .where(and(
+          eq(servicesTable.workerId, workerId),
+          inArray(servicesTable.status, ["accepted", "in_progress"]),
+        ))
+        .limit(1);
+      if (assigned) return { busyServiceId: assigned.id, sent: false };
+
+      const [stillPending] = await tx.select({ sessionId: alertSessionsTable.id })
+        .from(alertSessionsTable)
+        .innerJoin(workerAlertSlotsTable, and(
+          eq(workerAlertSlotsTable.workerId, alertSessionsTable.workerId),
+          eq(workerAlertSlotsTable.serviceId, alertSessionsTable.serviceId),
+          eq(workerAlertSlotsTable.deliveryId, alertSessionsTable.deliveryId),
+        ))
+        .where(and(
+          eq(alertSessionsTable.serviceId, active.serviceId),
+          eq(alertSessionsTable.workerId, workerId),
+          eq(alertSessionsTable.response, "pending"),
+          eq(alertSessionsTable.deliveryId, slot.deliveryId),
+          gt(alertSessionsTable.expiresAt, new Date()),
+        ))
+        .limit(1);
+      if (!stillPending) return { sent: false };
+
+      emitToUser(workerId, "service:active_alert", {
+        serviceId: active.serviceId,
+        deliveryId: slot.deliveryId,
+        title: active.title,
+        clientName: client?.name ?? "Cliente",
+        convivenciaScore: client?.clientRating ?? null,
+        distanceKm,
+        phase: active.phase === "promax" ? "promax" : "nearby",
+        totalSeconds: Math.max(1, Math.ceil((active.expiresAt.getTime() - Date.now()) / 1000)),
+        budgetNote: active.phase === "promax" ? (active.budgetNote ?? null) : null,
+      });
+      return { sent: true };
     });
+    if (replayed.busyServiceId) {
+      await invalidateOtherWorkerAlerts(workerId, replayed.busyServiceId);
+      return;
+    }
+    if (!replayed.sent) continue;
 
     const key = timerKey(active.serviceId, workerId);
     const oldTimer = alertTimers.get(key);
@@ -1322,6 +1541,8 @@ export async function reemitActiveAlertsForWorker(workerId: number): Promise<voi
         logger.error({ err: error, serviceId: active.serviceId, workerId }, "reconnected alert timeout error")
       );
     }, Math.max(0, active.expiresAt.getTime() - Date.now())));
+    }
+    await dispatchNextQueuedAlert(workerId);
   } catch (err) {
     logger.error({ err }, "reemitActiveAlertsForWorker error");
   }

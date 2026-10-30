@@ -30,12 +30,24 @@ const nearby = {
   serviceId: 42,
   deliveryId: "delivery-nearby",
   phase: "nearby" as const,
+  totalSeconds: 30,
   budgetNote: null,
 };
 const delayed = mergeIncomingServiceAlert(first.queue, nearby, now + 10_000);
 assert.equal(delayed.queue.length, 2, "the delayed Pro/Free event creates a second card");
 assert.equal(delayed.queue[1].phase, "nearby");
 assert.equal(delayed.queue[1].budgetNote, null, "the delayed card has no suggested budget");
+assert.equal(delayed.queue[0].expiresAt, now + 60_000, "adding another card must not reset the first timer");
+assert.equal(delayed.queue[1].expiresAt, now + 40_000, "each card must get its own expiry deadline");
+
+const remainingAfterSkip = delayed.queue.filter((alert) => alert.serviceId !== proMax.serviceId);
+assert.equal(remainingAfterSkip.length, 1, "omitting one card must preserve the other card");
+assert.equal(remainingAfterSkip[0].serviceId, nearby.serviceId);
+assert.equal(
+  remainingAfterSkip[0].expiresAt,
+  delayed.queue[1].expiresAt,
+  "omitting one card must not change another card's timer",
+);
 
 const freshDelivery = mergeIncomingServiceAlert(
   first.queue,

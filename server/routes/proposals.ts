@@ -651,6 +651,8 @@ router.post("/proposals/:id/accept-counter", authenticate, async (req: AuthReque
     throw err;
   }
 
+  await handleServiceTaken(proposal.serviceId, proposal.workerId);
+
   const notifyUserId = isClient ? proposal.workerId : service.clientId;
   const notifyOther2 = isClient ? service.clientId : proposal.workerId;
   await createNotification({
