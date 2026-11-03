@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from "react";
+import { useSearch } from "wouter";
+import { consumeSecuritySelfieServiceId, parseSecuritySelfieServiceId } from "@/lib/security-selfie-request";
 import { useAuth } from "@/hooks/use-auth";
 import { useGlobalSocket } from "@/hooks/use-global-socket";
 import {
@@ -620,7 +622,7 @@ function ClientServiceCard({ service, onModalOpen, onModalClose, autoOpenChat, o
   );
 }
 
-function WorkerJobCard({ proposal, autoRate, autoOpenChat, onAutoOpenHandled, onAutoRateHandled, retainedCancelled, onCancelledDismissed, openSecuritySelfie, onSecuritySelfieComplete }: { proposal: any; autoRate?: boolean; autoOpenChat?: boolean; onAutoOpenHandled?: () => void; onAutoRateHandled?: () => void; retainedCancelled?: boolean; onCancelledDismissed?: () => void; openSecuritySelfie?: boolean; onSecuritySelfieComplete?: (serviceId: number) => void }) {
+function WorkerJobCard({ proposal, autoRate, autoOpenChat, onAutoOpenHandled, onAutoRateHandled, retainedCancelled, onCancelledDismissed, openSecuritySelfie, onSecuritySelfieOpenHandled, onSecuritySelfieComplete }: { proposal: any; autoRate?: boolean; autoOpenChat?: boolean; onAutoOpenHandled?: () => void; onAutoRateHandled?: () => void; retainedCancelled?: boolean; onCancelledDismissed?: () => void; openSecuritySelfie?: boolean; onSecuritySelfieOpenHandled?: (serviceId: number) => void; onSecuritySelfieComplete?: (serviceId: number) => void }) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const arriveMutation = useArriveService();
@@ -647,8 +649,9 @@ function WorkerJobCard({ proposal, autoRate, autoOpenChat, onAutoOpenHandled, on
       !workerSelfieCompleted
     ) {
       setSecuritySelfieOpen(true);
+      onSecuritySelfieOpenHandled?.(svc.id);
     }
-  }, [openSecuritySelfie, svc?.id, proposal.status, workerSelfieCompleted]);
+  }, [openSecuritySelfie, svc?.id, proposal.status, workerSelfieCompleted, onSecuritySelfieOpenHandled]);
 
   useEffect(() => {
     if (autoOpenChat && !showChat) {
@@ -1197,6 +1200,7 @@ function useMyProposals(enabled: boolean) {
 
 export default function MisTrabajos() {
   const { user, isClient, isWorker } = useAuth();
+  const search = useSearch();
   const queryClient = useQueryClient();
   const [openModalServiceIds, setOpenModalServiceIds] = useState<Set<number>>(new Set());
   const [completedServiceId, setCompletedServiceId] = useState<number | null>(null);
@@ -1208,11 +1212,7 @@ export default function MisTrabajos() {
     const raw = new URLSearchParams(window.location.search).get("chatServiceId");
     return raw ? Number(raw) : null;
   });
-  const [securitySelfieServiceId, setSecuritySelfieServiceId] = useState<number | null>(() => {
-    const raw = new URLSearchParams(window.location.search).get("securitySelfieServiceId");
-    const parsed = raw ? Number(raw) : NaN;
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  });
+  const securitySelfieServiceId = parseSecuritySelfieServiceId(search);
   const [chargeServiceId] = useState<number | null>(() => {
     const raw = new URLSearchParams(window.location.search).get("chargeServiceId");
     const parsed = raw ? Number(raw) : NaN;
@@ -1227,11 +1227,18 @@ export default function MisTrabajos() {
   };
 
   const completeSecuritySelfieFlow = (serviceId: number) => {
-    setSecuritySelfieServiceId(null);
     setChatServiceId(serviceId);
     const url = new URL(window.location.href);
     url.searchParams.delete("securitySelfieServiceId");
     url.searchParams.set("chatServiceId", String(serviceId));
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  };
+
+  const consumeSecuritySelfieRequest = (serviceId: number) => {
+    const url = new URL(window.location.href);
+    const remainingSearch = consumeSecuritySelfieServiceId(url.search, serviceId);
+    if (remainingSearch === null) return;
+    url.search = remainingSearch;
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
   };
 
@@ -1386,6 +1393,7 @@ export default function MisTrabajos() {
                   onAutoRateHandled={() => setCompletedServiceId(null)}
                   retainedCancelled={cancelledServiceIds.has(p.service?.id)}
                   openSecuritySelfie={securitySelfieServiceId === p.service?.id}
+                  onSecuritySelfieOpenHandled={consumeSecuritySelfieRequest}
                   onSecuritySelfieComplete={completeSecuritySelfieFlow}
                   onCancelledDismissed={() => setCancelledServiceIds(prev => {
                     const next = new Set(prev);

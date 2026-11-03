@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:home-alerts": "tsx client/lib/home-alerts.test.ts",
     "test:service-alert-state": "tsx client/lib/service-alert-state.test.ts",
+    "test:security-selfie-retry": "tsx client/lib/security-selfie-request.test.ts",
     "test:client-service-selection": "tsx client/lib/service-selection.test.ts",
     "test:category-browser-navigation": "tsx client/lib/category-browser-navigation.test.ts",
     "test:service-alerts": "tsx server/lib/alert-recipient-selection.test.ts && tsx artifacts/api-server/src/lib/service-alert-policy.test.ts && tsx client/lib/service-alert-state.test.ts",
