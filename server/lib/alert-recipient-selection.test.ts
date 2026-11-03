@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   canReceiveWorkerAlerts,
+  getActiveAlertExclusionReasons,
   isWorkerWithinAlertRadius,
   NEARBY_DELAY_MS,
   resolveLatestWorkerPlans,
@@ -12,6 +13,53 @@ assert.equal(canReceiveWorkerAlerts("admin", "worker", "admin"), true);
 assert.equal(canReceiveWorkerAlerts("admin", "admin", undefined), false);
 assert.equal(canReceiveWorkerAlerts("admin", "client", "admin"), false);
 assert.equal(canReceiveWorkerAlerts("client", "worker", "client"), false);
+
+const diagnosticNow = new Date("2026-11-03T12:00:00Z");
+const eligibleDiagnostic = {
+  role: "worker",
+  isAvailable: true,
+  status: "active",
+  categoryMatches: true,
+  alertCooldownUntil: null,
+  suspendedUntil: null,
+  activeAsWorker: true,
+  hasActiveService: false,
+  now: diagnosticNow,
+};
+assert.deepEqual(getActiveAlertExclusionReasons(eligibleDiagnostic), []);
+assert.deepEqual(
+  getActiveAlertExclusionReasons({
+    ...eligibleDiagnostic,
+    role: "client",
+    isAvailable: false,
+    status: "blocked",
+    categoryMatches: false,
+    alertCooldownUntil: new Date("2026-11-03T12:01:00Z"),
+    suspendedUntil: new Date("2026-11-03T12:02:00Z"),
+    activeAsWorker: false,
+    hasActiveService: true,
+  }),
+  [
+    "role_not_worker",
+    "not_available",
+    "account_not_active",
+    "category_mismatch",
+    "alert_cooldown_active",
+    "account_suspended",
+    "not_in_worker_mode",
+    "has_active_service",
+  ],
+  "diagnostics should identify each active-alert exclusion without changing recipient selection",
+);
+assert.deepEqual(
+  getActiveAlertExclusionReasons({
+    ...eligibleDiagnostic,
+    alertCooldownUntil: diagnosticNow,
+    suspendedUntil: diagnosticNow,
+  }),
+  ["alert_cooldown_active", "account_suspended"],
+  "cooldown and suspension remain active through their exact end time",
+);
 
 const workers = [
   ...Array.from({ length: 10 }, (_, index) => ({ id: `plus-${index}`, isProMax: true })),

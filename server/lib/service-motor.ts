@@ -6,6 +6,7 @@ import { emitToWorkers, emitToUser, emitToService, isAdminInWorkerMode } from ".
 import { createNotification, createNotifications } from "./createNotification";
 import { logger } from "./logger";
 import {
+  getActiveAlertExclusionReasons,
   isWorkerWithinAlertRadius,
   NEARBY_DELAY_MS,
   resolveLatestWorkerPlans,
@@ -778,6 +779,66 @@ async function launchCombinedActivePhase(
     proMaxCount: [...workerPlans.values()].filter(plan => PROMAX_PLAN_CODES.includes(plan.planCode)).length,
   }, "motor: launching active phase");
 
+  // Audit only relevant worker IDs and filter outcomes. Run independently so
+  // diagnostic queries cannot delay or change the active alert selection.
+  const categoryMatch = sql<boolean>`EXISTS (
+    SELECT 1 FROM ${workerCategoriesTable}
+    WHERE ${workerCategoriesTable.workerId} = ${usersTable.id}
+      AND ${workerCategoriesTable.categoryId} = ${service.categoryId!}
+  )`;
+  void db
+    .select({
+      id: usersTable.id,
+      role: usersTable.role,
+      status: usersTable.status,
+      isAvailable: usersTable.isAvailable,
+      alertCooldownUntil: usersTable.alertCooldownUntil,
+      suspendedUntil: usersTable.suspendedUntil,
+      categoryMatches: categoryMatch,
+    })
+    .from(usersTable)
+    .where(and(
+      inArray(usersTable.role, ["worker", "admin"]),
+      or(eq(usersTable.isAvailable, true), categoryMatch),
+    ))
+    .then(async (diagnosticRows) => {
+      const [assignedRows, roleChecks] = await Promise.all([
+        db.select({ workerId: servicesTable.workerId })
+          .from(servicesTable)
+          .where(and(
+            inArray(servicesTable.status, ["accepted", "in_progress"]),
+            isNotNull(servicesTable.workerId),
+          )),
+        Promise.all(diagnosticRows.map(async (worker) => ({
+          workerId: worker.id,
+          activeAsWorker: await isActiveWorkerRecipient(worker.id, worker.role),
+        }))),
+      ]);
+      const assignedWorkerIds = new Set(assignedRows.map((row) => row.workerId));
+      const activeWorkerById = new Map(roleChecks.map((row) => [row.workerId, row.activeAsWorker]));
+      logger.info({
+        serviceId,
+        categoryId: service.categoryId,
+        workers: diagnosticRows.map((worker) => ({
+          workerId: worker.id,
+          excludedBy: getActiveAlertExclusionReasons({
+            role: worker.role,
+            isAvailable: worker.isAvailable,
+            status: worker.status,
+            categoryMatches: worker.categoryMatches,
+            alertCooldownUntil: worker.alertCooldownUntil,
+            suspendedUntil: worker.suspendedUntil,
+            activeAsWorker: activeWorkerById.get(worker.id) ?? false,
+            hasActiveService: assignedWorkerIds.has(worker.id),
+            now,
+          }),
+        })),
+      }, "motor: recipient exclusion diagnostics");
+    })
+    .catch((err) => {
+      logger.warn({ err, serviceId }, "motor: recipient diagnostics failed");
+    });
+
   // Obtener todos los workers disponibles de la misma categoría, sin cooldown
   const allEligible = await db
     .select({
@@ -863,6 +924,14 @@ async function launchCombinedActivePhase(
     serviceId,
     eligibleWorkers: eligibleWorkers.length,
     excludedByRadius: eligibleWorkers.length - rankedCandidates.length,
+    workerRadiusDiagnostics: candidateWorkers.map((worker) => {
+      const included = worker.isProMax ? worker.withinProMaxRadius : worker.isNearby;
+      return {
+        workerId: worker.id,
+        included,
+        reason: included ? "eligible" : "outside_profile_or_plan_radius",
+      };
+    }),
     proMaxRadiusDiagnostics: candidateWorkers
       .filter((worker) => worker.isProMax)
       .map((worker) => ({

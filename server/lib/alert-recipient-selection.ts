@@ -1,5 +1,36 @@
 export const NEARBY_DELAY_MS = 10_000;
 
+export interface ActiveAlertEligibilityDiagnosticInput {
+  role: string;
+  isAvailable: boolean;
+  status: string;
+  categoryMatches: boolean;
+  alertCooldownUntil: Date | null;
+  suspendedUntil: Date | null;
+  activeAsWorker: boolean;
+  hasActiveService: boolean;
+  now: Date;
+}
+
+export function getActiveAlertExclusionReasons(
+  input: ActiveAlertEligibilityDiagnosticInput,
+): string[] {
+  const reasons: string[] = [];
+  if (input.role !== "worker" && input.role !== "admin") reasons.push("role_not_worker");
+  if (!input.isAvailable) reasons.push("not_available");
+  if (input.status !== "active") reasons.push("account_not_active");
+  if (!input.categoryMatches) reasons.push("category_mismatch");
+  if (input.alertCooldownUntil && input.alertCooldownUntil >= input.now) {
+    reasons.push("alert_cooldown_active");
+  }
+  if (input.suspendedUntil && input.suspendedUntil >= input.now) {
+    reasons.push("account_suspended");
+  }
+  if (!input.activeAsWorker) reasons.push("not_in_worker_mode");
+  if (input.hasActiveService) reasons.push("has_active_service");
+  return reasons;
+}
+
 export function canReceiveWorkerAlerts(
   databaseRole: string,
   activeRole: string | null | undefined,
