@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db, servicesTable, usersTable, categoriesTable, subcategoriesTable, userFavoritesTable, workerCategoriesTable, proposalsTable, messagesTable, reviewsTable, paymentsTable, alertSessionsTable, cancellationChargesTable, securitySelfiesTable } from "../db";
 import { createNotification, createNotifications } from "../lib/createNotification";
 import { emitToWorkers, emitToService, emitToUser } from "../lib/socketio";
-import { eq, and, count, or, isNotNull, isNull, desc, notInArray, inArray, gte, lt, sql } from "drizzle-orm";
+import { eq, and, count, or, isNotNull, isNull, desc, notInArray, inArray, gte, gt, lt, lte, sql } from "drizzle-orm";
 import {
   launchActivePhase,
   transitionToPassive,
@@ -174,13 +174,43 @@ router.get("/services", authenticate, async (req: AuthRequest, res): Promise<voi
   const noCount = req.query.noCount === "true";
 
   const conditions = [];
-  if (status) conditions.push(eq(servicesTable.status, status as "pending" | "alerting" | "open" | "accepted" | "in_progress" | "completed" | "cancelled"));
+  if (status && !(req.userRole === "worker" && status === "open")) {
+    conditions.push(eq(servicesTable.status, status as "pending" | "alerting" | "open" | "accepted" | "in_progress" | "completed" | "cancelled"));
+  }
   if (clientId) conditions.push(eq(servicesTable.clientId, clientId));
 
   if (req.userRole === "client") {
     conditions.push(eq(servicesTable.clientId, req.userId!));
     if (workerId) conditions.push(eq(servicesTable.workerId, workerId));
   } else if (req.userRole === "worker") {
+    if (status === "open" && !workerId && req.userId) {
+      const personalTrayAlerts = db
+        .select({ serviceId: alertSessionsTable.serviceId })
+        .from(alertSessionsTable)
+        .where(and(
+          eq(alertSessionsTable.workerId, req.userId),
+          eq(alertSessionsTable.response, "pending"),
+          lte(alertSessionsTable.modalExpiresAt, new Date()),
+          gt(alertSessionsTable.expiresAt, new Date()),
+        ));
+      conditions.push(or(
+        eq(servicesTable.status, "open"),
+        and(
+          eq(servicesTable.status, "alerting"),
+          inArray(servicesTable.id, personalTrayAlerts),
+        ),
+      )!);
+
+      const timedOutAlerts = db
+        .select({ serviceId: alertSessionsTable.serviceId })
+        .from(alertSessionsTable)
+        .where(and(
+          eq(alertSessionsTable.workerId, req.userId),
+          inArray(alertSessionsTable.response, ["pending", "skipped"]),
+          lte(alertSessionsTable.expiresAt, new Date()),
+        ));
+      conditions.push(notInArray(servicesTable.id, timedOutAlerts));
+    }
     if (workerId && workerId === req.userId) {
       // Subquery: servicios donde este worker tiene propuesta
       const myProposalServiceIds = db

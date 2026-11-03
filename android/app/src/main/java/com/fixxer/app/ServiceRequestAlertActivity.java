@@ -98,9 +98,9 @@ public class ServiceRequestAlertActivity extends AppCompatActivity {
             @Override
             public void run() {
                 if (alert == null || expiryView == null) return;
-                long remaining = alert.remainingMillis();
+                long remaining = alert.modalRemainingMillis();
                 if (remaining <= 0L) {
-                    ServiceRequestAlertController.expire(ServiceRequestAlertActivity.this, alert.deliveryId);
+                    ServiceRequestAlertController.dismissModal(ServiceRequestAlertActivity.this, alert);
                     finish();
                     return;
                 }

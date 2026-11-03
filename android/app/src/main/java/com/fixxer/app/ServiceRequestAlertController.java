@@ -28,6 +28,13 @@ public final class ServiceRequestAlertController {
         if (MainActivity.isInForeground || ServiceRequestAlertActivity.isInForeground) return;
 
         rememberActiveAlert(appContext, alert);
+        if (alert.modalRemainingMillis() <= 0L) {
+            postQuietNotification(appContext, alert);
+            return;
+        }
+        EXPIRY_HANDLER.postDelayed(
+                () -> dismissModal(appContext, alert),
+                alert.modalRemainingMillis());
         EXPIRY_HANDLER.postDelayed(
                 () -> expire(appContext, alert.deliveryId),
                 alert.remainingMillis());
@@ -77,6 +84,17 @@ public final class ServiceRequestAlertController {
         cancelIfCurrent(context, deliveryId);
     }
 
+    /** Moves the native modal to a quiet tray notification after its first minute. */
+    public static void dismissModal(Context context, ServiceRequestAlert alert) {
+        if (alert == null || !isCurrentDelivery(context, alert.deliveryId)) return;
+        ServiceRequestOverlay.hideVisible(context, alert.deliveryId);
+        if (alert.remainingMillis() > 0L) {
+            postQuietNotification(context, alert);
+        } else {
+            expire(context, alert.deliveryId);
+        }
+    }
+
     /** Cancels the request-alert cards only when they still represent this delivery. */
     private static void cancelIfCurrent(Context context, String deliveryId) {
         android.content.SharedPreferences prefs =
@@ -100,6 +118,11 @@ public final class ServiceRequestAlertController {
                 .edit()
                 .putString(PREF_ACTIVE_DELIVERY_ID, alert.deliveryId)
                 .apply();
+    }
+
+    private static boolean isCurrentDelivery(Context context, String deliveryId) {
+        return deliveryId.equals(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString(PREF_ACTIVE_DELIVERY_ID, null));
     }
 
     private static boolean isScreenLockedOrOff(Context context) {

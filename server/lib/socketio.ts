@@ -685,6 +685,9 @@ export async function initSocketIO(httpServer: HTTPServer): Promise<SocketServer
             acknowledge?.({ accepted: false });
             return;
           }
+          await db.update(alertSessionsTable)
+            .set({ receivedAt: new Date() })
+            .where(eq(alertSessionsTable.id, session.id));
           console.info("Active service alert received by worker", {
             serviceId,
             workerId: uid,

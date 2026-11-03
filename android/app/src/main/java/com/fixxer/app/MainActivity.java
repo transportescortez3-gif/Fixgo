@@ -37,6 +37,7 @@ public class MainActivity extends BridgeActivity {
     public void onResume() {
         super.onResume();
         isInForeground = true;
+        ServiceRequestOverlay.hideVisible(this, null);
     }
 
     @Override

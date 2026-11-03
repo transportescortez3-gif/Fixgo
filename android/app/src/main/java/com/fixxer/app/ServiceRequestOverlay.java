@@ -249,9 +249,9 @@ public final class ServiceRequestOverlay {
             @Override
             public void run() {
                 if (!alert.deliveryId.equals(visibleDeliveryId) || countdownView == null) return;
-                long remaining = alert.expiresAt - System.currentTimeMillis();
+                long remaining = alert.modalRemainingMillis();
                 if (remaining <= 0L) {
-                    ServiceRequestAlertController.expire(context, alert.deliveryId);
+                    ServiceRequestAlertController.dismissModal(context, alert);
                     return;
                 }
                 long seconds = (remaining + 999L) / 1000L;

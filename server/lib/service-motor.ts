@@ -29,7 +29,8 @@ import { finalizeCompletionSideEffects } from "./complete-service";
 //   Destinatarios: TODOS los workers activos de la categoría, sin límite de distancia.
 //   Mecanismo: emite service:available → aparece en la lista inferior del worker.
 // ─────────────────────────────────────────────────────────────────────────────
-const ACTIVE_TIMEOUT_MS = 60_000;     // 60 s para la fase activa (Pro Max + cercanos)
+const ACTIVE_MODAL_TIMEOUT_MS = 60_000;
+const ACTIVE_TIMEOUT_MS = 120_000;    // 60 s en modal + 60 s en bandeja
 const ARRIVAL_AUTO_START_DELAY_MS = 10 * 60_000;
 
 const PROMAX_PLAN_CODES = ["pro_plus_monthly", "pro_plus_annual"];
@@ -165,6 +166,7 @@ export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?
       phase: alertSessionsTable.phase,
       distanceKm: alertSessionsTable.distanceKm,
       expiresAt: alertSessionsTable.expiresAt,
+      modalExpiresAt: alertSessionsTable.modalExpiresAt,
       title: servicesTable.title,
       clientId: servicesTable.clientId,
       budgetNote: servicesTable.budgetNote,
@@ -211,8 +213,16 @@ export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?
     });
     if (!slot) return { dispatch: null, expiredServiceIds };
 
+    const modalExpiresAt = new Date(now.getTime() + ACTIVE_MODAL_TIMEOUT_MS);
     const [session] = await tx.update(alertSessionsTable)
-      .set({ deliveredAt: now, deliveryId, sentAt: now })
+      .set({
+        deliveredAt: now,
+        receivedAt: null,
+        deliveryId,
+        sentAt: now,
+        modalExpiresAt,
+        expiresAt: new Date(now.getTime() + ACTIVE_TIMEOUT_MS),
+      })
       .where(and(
         eq(alertSessionsTable.id, candidate.sessionId),
         eq(alertSessionsTable.response, "pending"),
@@ -220,7 +230,11 @@ export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?
         lte(alertSessionsTable.availableAt, now),
         gt(alertSessionsTable.expiresAt, now),
       ))
-      .returning({ id: alertSessionsTable.id });
+      .returning({
+        id: alertSessionsTable.id,
+        expiresAt: alertSessionsTable.expiresAt,
+        modalExpiresAt: alertSessionsTable.modalExpiresAt,
+      });
 
     if (!session) {
       await tx.delete(workerAlertSlotsTable).where(and(
@@ -230,7 +244,15 @@ export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?
       return { dispatch: null, expiredServiceIds };
     }
 
-    return { dispatch: { ...candidate, deliveryId }, expiredServiceIds };
+    return {
+      dispatch: {
+        ...candidate,
+        deliveryId,
+        expiresAt: session.expiresAt,
+        modalExpiresAt: session.modalExpiresAt ?? modalExpiresAt,
+      },
+      expiredServiceIds,
+    };
   });
 
   if (!dispatchResult) return false;
@@ -247,6 +269,7 @@ export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?
   const client = await getClientInfo(dispatch.clientId);
   const distanceKm = dispatch.distanceKm == null ? null : Math.round(dispatch.distanceKm * 10) / 10;
   const remainingSeconds = Math.max(1, Math.ceil((dispatch.expiresAt.getTime() - Date.now()) / 1000));
+  const modalSeconds = Math.max(0, Math.ceil((dispatch.modalExpiresAt.getTime() - Date.now()) / 1000));
   const phase = dispatch.phase === "promax" ? "promax" : "nearby";
 
   // Serialize the final validation and socket emit with assignment cleanup.
@@ -308,6 +331,7 @@ export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?
       distanceKm,
       phase,
       totalSeconds: remainingSeconds,
+      modalSeconds,
       budgetNote: phase === "promax" ? (dispatch.budgetNote ?? null) : null,
     });
     return { sent: true };
@@ -335,6 +359,7 @@ export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?
     highPriority: true,
     deliveryId: dispatch.deliveryId,
     alertExpiresAt: dispatch.expiresAt,
+    alertModalExpiresAt: dispatch.modalExpiresAt,
     phase,
     budgetNote: phase === "promax" ? (dispatch.budgetNote ?? null) : null,
   }).catch((error) => logger.error({
@@ -353,7 +378,47 @@ export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?
     );
   }, Math.max(0, dispatch.expiresAt.getTime() - Date.now()));
   alertTimers.set(key, timer);
+  setTimeout(() => {
+    emitToUser(workerId, "service:available", {
+      serviceId: dispatch.serviceId,
+      alertPhase: "tray",
+    });
+    checkAllResponded(dispatch.serviceId).catch((error) =>
+      logger.error({ err: error, serviceId: dispatch.serviceId }, "active modal phase transition error")
+    );
+  }, Math.max(0, dispatch.modalExpiresAt.getTime() - Date.now()));
+  scheduleAlertReceiptRetry(workerId, dispatch.serviceId, dispatch.deliveryId);
   return true;
+}
+
+function scheduleAlertReceiptRetry(
+  workerId: number,
+  serviceId: number,
+  deliveryId: string,
+  attempt = 0,
+): void {
+  const delays = [3_000, 6_000, 12_000];
+  const delay = delays[attempt];
+  if (delay === undefined) return;
+
+  setTimeout(async () => {
+    const [session] = await db.select({
+      response: alertSessionsTable.response,
+      receivedAt: alertSessionsTable.receivedAt,
+      deliveryId: alertSessionsTable.deliveryId,
+      expiresAt: alertSessionsTable.expiresAt,
+    }).from(alertSessionsTable).where(and(
+      eq(alertSessionsTable.serviceId, serviceId),
+      eq(alertSessionsTable.workerId, workerId),
+    )).limit(1);
+
+    if (!session || session.response !== "pending" ||
+        session.deliveryId !== deliveryId || session.receivedAt ||
+        session.expiresAt <= new Date()) return;
+
+    await reemitActiveAlertsForWorker(workerId);
+    scheduleAlertReceiptRetry(workerId, serviceId, deliveryId, attempt + 1);
+  }, delay);
 }
 
 /** Refresh the live Pro Max popup when the client edits the service budget. */
@@ -364,6 +429,7 @@ export async function refreshProMaxBudgetAlerts(serviceId: number): Promise<void
     deliveryId: alertSessionsTable.deliveryId,
     distanceKm: alertSessionsTable.distanceKm,
     expiresAt: alertSessionsTable.expiresAt,
+    modalExpiresAt: alertSessionsTable.modalExpiresAt,
     title: servicesTable.title,
     clientId: servicesTable.clientId,
     budgetNote: servicesTable.budgetNote,
@@ -403,6 +469,7 @@ export async function refreshProMaxBudgetAlerts(serviceId: number): Promise<void
       distanceKm: alert.distanceKm == null ? null : Math.round(alert.distanceKm * 10) / 10,
       phase: "promax",
       totalSeconds: Math.max(1, Math.ceil((alert.expiresAt.getTime() - Date.now()) / 1000)),
+      modalSeconds: Math.max(0, Math.ceil(((alert.modalExpiresAt?.getTime() ?? Date.now()) - Date.now()) / 1000)),
       budgetNote: alert.budgetNote ?? null,
     });
   }
@@ -451,6 +518,7 @@ export async function queueDirectServiceAlert(serviceId: number, workerId: numbe
     response: "pending",
     sentAt: now,
     availableAt: now,
+    modalExpiresAt: new Date(now.getTime() + ACTIVE_MODAL_TIMEOUT_MS),
     expiresAt: new Date(now.getTime() + ACTIVE_TIMEOUT_MS),
     phase: "direct",
   }).onConflictDoNothing();
@@ -461,8 +529,10 @@ export async function queueDirectServiceAlert(serviceId: number, workerId: numbe
       respondedAt: null,
       sentAt: now,
       availableAt: now,
+      modalExpiresAt: new Date(now.getTime() + ACTIVE_MODAL_TIMEOUT_MS),
       expiresAt: new Date(now.getTime() + ACTIVE_TIMEOUT_MS),
       deliveredAt: null,
+      receivedAt: null,
       deliveryId: null,
       phase: "direct",
       distanceKm: null,
@@ -948,7 +1018,17 @@ async function launchCombinedActivePhase(
 
   logger.info({
     serviceId,
+    categoryId: service.categoryId,
     qualified: qualified.map(w => ({ id: w.id, isProMax: w.isProMax, distKm: w.distKm })),
+    recipientOutcomes: candidateWorkers.map((worker) => {
+      const included = worker.isProMax ? worker.withinProMaxRadius : worker.isNearby;
+      return {
+        workerId: worker.id,
+        selected: included,
+        phase: worker.isProMax ? "promax" : "nearby",
+        reason: included ? null : "outside_profile_or_plan_radius",
+      };
+    }),
     excludedAssigned,
     excludedByRadius: eligibleWorkers.length - rankedCandidates.length,
   }, "motor: qualified workers for active alert");
@@ -973,6 +1053,7 @@ async function launchCombinedActivePhase(
       response: "pending",
       sentAt: now,
       availableAt: new Date(now.getTime() + (w.isProMax ? 0 : NEARBY_DELAY_MS)),
+      modalExpiresAt: new Date(now.getTime() + (w.isProMax ? 0 : NEARBY_DELAY_MS) + ACTIVE_MODAL_TIMEOUT_MS),
       expiresAt: new Date(now.getTime() + ACTIVE_TIMEOUT_MS),
       phase: w.isProMax ? "promax" : "nearby",
       distanceKm: w.distKm,
@@ -991,8 +1072,10 @@ async function launchCombinedActivePhase(
         respondedAt: null,
         sentAt: now,
         availableAt,
+        modalExpiresAt: new Date(availableAt.getTime() + ACTIVE_MODAL_TIMEOUT_MS),
         expiresAt: new Date(now.getTime() + ACTIVE_TIMEOUT_MS),
         deliveredAt: null,
+        receivedAt: null,
         deliveryId: null,
         phase: worker.isProMax ? "promax" : "nearby",
         distanceKm: worker.distKm,
@@ -1174,8 +1257,10 @@ export async function handleWorkerView(serviceId: number, workerId: number): Pro
         response: "viewed",
         sentAt: now,
         availableAt: now,
+      modalExpiresAt: new Date(now.getTime() + ACTIVE_MODAL_TIMEOUT_MS),
         expiresAt: new Date(now.getTime() + ACTIVE_TIMEOUT_MS),
         deliveredAt: now,
+      receivedAt: now,
         deliveryId,
         phase: "nearby",
         respondedAt: now,
@@ -1250,16 +1335,22 @@ async function checkAllResponded(serviceId: number): Promise<void> {
 
   if (!service || service.status !== "alerting") return;
 
-  const pendingSessions = await db
+  const pendingModalSessions = await db
     .select({ id: alertSessionsTable.id })
     .from(alertSessionsTable)
     .where(and(
       eq(alertSessionsTable.serviceId, serviceId),
       eq(alertSessionsTable.response, "pending"),
-      gt(alertSessionsTable.expiresAt, new Date()),
+      or(
+        gt(alertSessionsTable.modalExpiresAt, new Date()),
+        and(
+          isNull(alertSessionsTable.modalExpiresAt),
+          gt(alertSessionsTable.expiresAt, new Date()),
+        ),
+      ),
     ));
 
-  if (pendingSessions.length > 0) return;
+  if (pendingModalSessions.length > 0) return;
 
   // Todos respondieron/expiraron → Fase 2: bandeja para todos
   await transitionToPassive(serviceId);
@@ -1274,13 +1365,15 @@ export async function transitionToPassive(serviceId: number): Promise<void> {
   const service = await getServiceForMotor(serviceId);
   if (!service) return;
 
-  await db
+  const [transitioned] = await db
     .update(servicesTable)
     .set({ status: "open" })
     .where(and(
       eq(servicesTable.id, serviceId),
       or(eq(servicesTable.status, "alerting"), eq(servicesTable.status, "pending")),
-    ));
+    ))
+    .returning({ id: servicesTable.id });
+  if (!transitioned) return;
 
   // Workers activos de la categoría con su ubicación y radio de servicio
   const allWorkers = await db
@@ -1311,7 +1404,10 @@ export async function transitionToPassive(serviceId: number): Promise<void> {
   // Filtrar por radio de servicio del worker vs ubicación del servicio
   const hasServiceCoords = !!(service.lat && service.lng);
   const [busySlots, assignedServices] = await Promise.all([
-    db.select({ workerId: workerAlertSlotsTable.workerId }).from(workerAlertSlotsTable),
+    db.select({
+      workerId: workerAlertSlotsTable.workerId,
+      serviceId: workerAlertSlotsTable.serviceId,
+    }).from(workerAlertSlotsTable),
     db.select({ workerId: servicesTable.workerId })
       .from(servicesTable)
       .where(and(
@@ -1319,7 +1415,7 @@ export async function transitionToPassive(serviceId: number): Promise<void> {
       )),
   ]);
   const busyWorkerIds = new Set([
-    ...busySlots.map((slot) => slot.workerId),
+    ...busySlots.filter((slot) => slot.serviceId !== serviceId).map((slot) => slot.workerId),
     ...assignedServices.map((service) => service.workerId).filter((id): id is number => id !== null),
   ]);
 
@@ -1512,6 +1608,7 @@ export async function reemitActiveAlertsForWorker(workerId: number): Promise<voi
       phase: alertSessionsTable.phase,
       distanceKm: alertSessionsTable.distanceKm,
       expiresAt: alertSessionsTable.expiresAt,
+      modalExpiresAt: alertSessionsTable.modalExpiresAt,
       status: servicesTable.status,
       isDirectRequest: servicesTable.isDirectRequest,
       directWorkerId: servicesTable.directWorkerId,
@@ -1592,6 +1689,7 @@ export async function reemitActiveAlertsForWorker(workerId: number): Promise<voi
         distanceKm,
         phase: active.phase === "promax" ? "promax" : "nearby",
         totalSeconds: Math.max(1, Math.ceil((active.expiresAt.getTime() - Date.now()) / 1000)),
+        modalSeconds: Math.max(0, Math.ceil(((active.modalExpiresAt?.getTime() ?? Date.now()) - Date.now()) / 1000)),
         budgetNote: active.phase === "promax" ? (active.budgetNote ?? null) : null,
       });
       return { sent: true };

@@ -9,10 +9,11 @@ export async function createNotification(data: InsertNotification & {
   highPriority?: boolean;
   deliveryId?: string;
   alertExpiresAt?: Date | string;
+  alertModalExpiresAt?: Date | string;
   phase?: "promax" | "nearby";
   budgetNote?: string | null;
 }): Promise<void> {
-  const { highPriority, deliveryId, alertExpiresAt, phase, budgetNote, ...dbData } = data;
+  const { highPriority, deliveryId, alertExpiresAt, alertModalExpiresAt, phase, budgetNote, ...dbData } = data;
   await db.insert(notificationsTable).values(dbData);
   logger.info({
     userId: data.userId,
@@ -53,7 +54,15 @@ export async function createNotification(data: InsertNotification & {
         : {}),
     };
     const androidData = data.type === "service_request" && alertExpiresAt
-      ? { ...pushData, alertExpiresAt: typeof alertExpiresAt === "string" ? alertExpiresAt : alertExpiresAt.toISOString() }
+      ? {
+          ...pushData,
+          alertExpiresAt: typeof alertExpiresAt === "string" ? alertExpiresAt : alertExpiresAt.toISOString(),
+          ...(alertModalExpiresAt ? {
+            alertModalExpiresAt: typeof alertModalExpiresAt === "string"
+              ? alertModalExpiresAt
+              : alertModalExpiresAt.toISOString(),
+          } : {}),
+        }
       : pushData;
 
     const results = await Promise.all(tokens.map(token =>

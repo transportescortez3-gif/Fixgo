@@ -20,6 +20,7 @@ public final class ServiceRequestAlert {
     public static final String EXTRA_PHASE = "serviceRequestPhase";
     public static final String EXTRA_BUDGET_NOTE = "serviceRequestBudgetNote";
     public static final String EXTRA_EXPIRES_AT = "serviceRequestExpiresAt";
+    public static final String EXTRA_MODAL_EXPIRES_AT = "serviceRequestModalExpiresAt";
 
     public final String deliveryId;
     public final String serviceId;
@@ -28,6 +29,7 @@ public final class ServiceRequestAlert {
     public final String phase;
     public final String budgetNote;
     public final long expiresAt;
+    public final long modalExpiresAt;
 
     private ServiceRequestAlert(
             String deliveryId,
@@ -36,7 +38,8 @@ public final class ServiceRequestAlert {
             String body,
             String phase,
             String budgetNote,
-            long expiresAt) {
+            long expiresAt,
+            long modalExpiresAt) {
         this.deliveryId = deliveryId;
         this.serviceId = serviceId;
         this.title = title;
@@ -44,6 +47,7 @@ public final class ServiceRequestAlert {
         this.phase = phase;
         this.budgetNote = budgetNote;
         this.expiresAt = expiresAt;
+        this.modalExpiresAt = Math.min(expiresAt, modalExpiresAt);
     }
 
     public static ServiceRequestAlert fromData(Map<String, String> data) {
@@ -55,6 +59,11 @@ public final class ServiceRequestAlert {
 
         long expiresAt = parseIsoDate(expiresAtValue);
         if (expiresAt <= 0L) return null;
+        String modalExpiresAtValue = clean(data.get("alertModalExpiresAt"));
+        long modalExpiresAt = modalExpiresAtValue.isEmpty()
+                ? Math.min(expiresAt, System.currentTimeMillis() + 60_000L)
+                : parseIsoDate(modalExpiresAtValue);
+        if (modalExpiresAt <= 0L) modalExpiresAt = Math.min(expiresAt, System.currentTimeMillis() + 60_000L);
 
         String title = clean(data.get("title"));
         if (title.isEmpty()) title = "Nueva solicitud de trabajo";
@@ -64,7 +73,7 @@ public final class ServiceRequestAlert {
         String phase = "promax".equals(clean(data.get("phase"))) ? "promax" : "nearby";
         String budgetNote = phase.equals("promax") ? clean(data.get("budgetNote")) : "";
 
-        return new ServiceRequestAlert(deliveryId, serviceId, title, body, phase, budgetNote, expiresAt);
+        return new ServiceRequestAlert(deliveryId, serviceId, title, body, phase, budgetNote, expiresAt, modalExpiresAt);
     }
 
     public static ServiceRequestAlert fromIntent(Intent intent) {
@@ -73,6 +82,9 @@ public final class ServiceRequestAlert {
         String serviceId = clean(intent.getStringExtra(EXTRA_SERVICE_ID));
         long expiresAt = intent.getLongExtra(EXTRA_EXPIRES_AT, 0L);
         if (deliveryId.isEmpty() || serviceId.isEmpty() || expiresAt <= 0L) return null;
+        long modalExpiresAt = intent.getLongExtra(
+                EXTRA_MODAL_EXPIRES_AT,
+                Math.min(expiresAt, System.currentTimeMillis() + 60_000L));
 
         String title = clean(intent.getStringExtra(EXTRA_TITLE));
         if (title.isEmpty()) title = "Nueva solicitud de trabajo";
@@ -82,7 +94,7 @@ public final class ServiceRequestAlert {
         String budgetNote = phase.equals("promax")
                 ? clean(intent.getStringExtra(EXTRA_BUDGET_NOTE))
                 : "";
-        return new ServiceRequestAlert(deliveryId, serviceId, title, body, phase, budgetNote, expiresAt);
+        return new ServiceRequestAlert(deliveryId, serviceId, title, body, phase, budgetNote, expiresAt, modalExpiresAt);
     }
 
     public Intent createActivityIntent(Context context) {
@@ -96,6 +108,7 @@ public final class ServiceRequestAlert {
         intent.putExtra(EXTRA_PHASE, phase);
         intent.putExtra(EXTRA_BUDGET_NOTE, budgetNote);
         intent.putExtra(EXTRA_EXPIRES_AT, expiresAt);
+        intent.putExtra(EXTRA_MODAL_EXPIRES_AT, modalExpiresAt);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         return intent;
     }
@@ -111,6 +124,10 @@ public final class ServiceRequestAlert {
 
     public long remainingMillis() {
         return Math.max(0L, expiresAt - System.currentTimeMillis());
+    }
+
+    public long modalRemainingMillis() {
+        return Math.max(0L, modalExpiresAt - System.currentTimeMillis());
     }
 
     public String notificationBody() {

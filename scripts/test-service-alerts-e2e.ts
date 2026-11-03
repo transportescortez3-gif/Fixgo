@@ -17,6 +17,7 @@ import {
   workerCategoriesTable,
 } from "../server/db";
 import { hashPassword, signToken } from "../server/lib/auth";
+import { mergeIncomingServiceAlert, type QueuedServiceAlert } from "../client/lib/service-alert-state";
 
 const BASE_URL = process.env.SERVICE_ALERT_E2E_BASE_URL
   ?? `http://127.0.0.1:${process.env.PORT ?? "5000"}`;
@@ -140,6 +141,7 @@ async function connectWorker(
   worker: TestAccount,
   activeRole: "client" | "worker" | "admin" = worker.role,
   originalRole?: "admin",
+  options: { acknowledgeReceipts?: boolean } = {},
 ): Promise<Socket> {
   const socket = io(BASE_URL, {
     path: "/socket.io",
@@ -158,7 +160,7 @@ async function connectWorker(
   sockets.push(socket);
   socket.on("service:active_alert", (event: AlertEvent) => {
     eventsByWorker.get(worker.id)?.push(event);
-    if (event.deliveryId) {
+    if (event.deliveryId && options.acknowledgeReceipts !== false) {
       socket.emit(
         "service:alert_received",
         { serviceId: event.serviceId, deliveryId: event.deliveryId },
@@ -646,6 +648,210 @@ async function main(): Promise<void> {
   const clearedParallelSlots = await db.select({ serviceId: workerAlertSlotsTable.serviceId })
     .from(workerAlertSlotsTable).where(eq(workerAlertSlotsTable.workerId, simultaneousProMax.id));
   assert.equal(clearedParallelSlots.length, 0, "clearing test alerts must release their reservations");
+
+  const [receiptRecoveryCategory] = await db.insert(categoriesTable).values({
+    name: `${PREFIX}: categoría de recuperación de acuse`,
+    platform: "expertos",
+  }).returning({ id: categoriesTable.id });
+  categoryIds.push(receiptRecoveryCategory.id);
+  const receiptRecoveryWorker = await createAccount("Experto de recuperación de acuse", "worker", 14);
+  await db.insert(workerCategoriesTable).values({
+    workerId: receiptRecoveryWorker.id,
+    categoryId: receiptRecoveryCategory.id,
+    isPrimary: true,
+  });
+  const receiptPeriodStart = new Date();
+  await db.insert(userSubscriptionsTable).values({
+    userId: receiptRecoveryWorker.id,
+    planCode: PROMAX_PLAN,
+    status: "active",
+    interval: "monthly",
+    currentPeriodStart: receiptPeriodStart,
+    currentPeriodEnd: new Date(receiptPeriodStart.getTime() + 30 * 24 * 60 * 60 * 1000),
+  });
+  socketsByWorker.set(
+    receiptRecoveryWorker.id,
+    await connectWorker(receiptRecoveryWorker, receiptRecoveryWorker.role, undefined, {
+      acknowledgeReceipts: false,
+    }),
+  );
+
+  const recoveryFirstServiceId = await createServiceRequest(
+    client,
+    receiptRecoveryCategory.id,
+    `${PREFIX}: recuperación de acuse uno`,
+  );
+  await waitUntil(
+    () => eventsByWorker.get(receiptRecoveryWorker.id)?.some(
+      (event) => event.serviceId === recoveryFirstServiceId,
+    ) ?? false,
+    6_000,
+    "the first receipt-recovery alert was not delivered",
+  );
+  const recoverySecondServiceId = await createServiceRequest(
+    client,
+    receiptRecoveryCategory.id,
+    `${PREFIX}: recuperación de acuse dos`,
+  );
+  const recoveryServiceIds = [recoveryFirstServiceId, recoverySecondServiceId];
+  await waitUntil(
+    () => recoveryServiceIds.every((serviceId) =>
+      eventsByWorker.get(receiptRecoveryWorker.id)?.some((event) => event.serviceId === serviceId)
+    ),
+    6_000,
+    "the second consecutive receipt-recovery alert was not delivered",
+  );
+
+  const recoveryWorkerEvents = eventsByWorker.get(receiptRecoveryWorker.id)!;
+  const firstRecoveryDeliveryId = recoveryWorkerEvents.find(
+    (event) => event.serviceId === recoveryFirstServiceId,
+  )?.deliveryId;
+  const secondRecoveryDeliveryId = recoveryWorkerEvents.find(
+    (event) => event.serviceId === recoverySecondServiceId,
+  )?.deliveryId;
+  assert.ok(firstRecoveryDeliveryId, "the first recovery alert must have a delivery ID");
+  assert.ok(secondRecoveryDeliveryId, "the second recovery alert must have a delivery ID");
+  assert.notEqual(firstRecoveryDeliveryId, secondRecoveryDeliveryId);
+
+  await waitUntil(
+    () => recoveryServiceIds.every((serviceId) =>
+      recoveryWorkerEvents.filter((event) => event.serviceId === serviceId).length >= 2
+    ),
+    6_000,
+    "alerts without a receipt were not retried",
+  );
+  for (const [serviceId, expectedDeliveryId] of [
+    [recoveryFirstServiceId, firstRecoveryDeliveryId],
+    [recoverySecondServiceId, secondRecoveryDeliveryId],
+  ] as const) {
+    assert.ok(
+      recoveryWorkerEvents.filter((event) => event.serviceId === serviceId)
+        .every((event) => event.deliveryId === expectedDeliveryId),
+      "receipt retries must preserve the original delivery ID",
+    );
+    const [session] = await db.select().from(alertSessionsTable).where(and(
+      eq(alertSessionsTable.serviceId, serviceId),
+      eq(alertSessionsTable.workerId, receiptRecoveryWorker.id),
+    )).limit(1);
+    assert.equal(session?.receivedAt, null, "the server must keep retrying while the receipt is absent");
+  }
+
+  const initialRecoveryQueue: QueuedServiceAlert[] = [];
+  for (const event of recoveryWorkerEvents) {
+    if (!recoveryServiceIds.includes(event.serviceId) || !event.deliveryId) continue;
+    const merged = mergeIncomingServiceAlert(initialRecoveryQueue, {
+      serviceId: event.serviceId,
+      deliveryId: event.deliveryId,
+      title: event.title,
+      clientName: "Cliente de prueba",
+      convivenciaScore: null,
+      distanceKm: event.distanceKm ?? null,
+      phase: event.phase,
+      totalSeconds: event.totalSeconds,
+      budgetNote: event.budgetNote,
+    });
+    initialRecoveryQueue.splice(0, initialRecoveryQueue.length, ...merged.queue);
+  }
+  assert.equal(initialRecoveryQueue.length, 2, "retrying the same delivery must not duplicate either alert");
+  const firstOriginalExpiry = initialRecoveryQueue.find(
+    (alert) => alert.serviceId === recoveryFirstServiceId,
+  )?.expiresAt;
+  const firstOriginalModalExpiry = initialRecoveryQueue.find(
+    (alert) => alert.serviceId === recoveryFirstServiceId,
+  )?.modalExpiresAt;
+  assert.ok(firstOriginalExpiry);
+  assert.ok(firstOriginalModalExpiry);
+
+  socketsByWorker.get(receiptRecoveryWorker.id)?.disconnect();
+  socketsByWorker.set(
+    receiptRecoveryWorker.id,
+    await connectWorker(receiptRecoveryWorker, receiptRecoveryWorker.role, undefined, {
+      acknowledgeReceipts: false,
+    }),
+  );
+  await waitUntil(
+    () => recoveryServiceIds.every((serviceId) =>
+      recoveryWorkerEvents.filter((event) => event.serviceId === serviceId).length >= 3
+    ),
+    6_000,
+    "the active alerts were not recovered after reconnecting",
+  );
+  const recoveredEvents = recoveryWorkerEvents.filter((event) => recoveryServiceIds.includes(event.serviceId));
+  assert.ok(
+    recoveredEvents.every((event) =>
+      event.deliveryId === (event.serviceId === recoveryFirstServiceId
+        ? firstRecoveryDeliveryId
+        : secondRecoveryDeliveryId)
+    ),
+    "reconnection must replay each active alert with its original delivery ID",
+  );
+
+  let recoveredQueue = initialRecoveryQueue;
+  for (const event of recoveredEvents) {
+    if (!event.deliveryId) continue;
+    const merged = mergeIncomingServiceAlert(recoveredQueue, {
+      serviceId: event.serviceId,
+      deliveryId: event.deliveryId,
+      title: event.title,
+      clientName: "Cliente de prueba",
+      convivenciaScore: null,
+      distanceKm: event.distanceKm ?? null,
+      phase: event.phase,
+      totalSeconds: event.totalSeconds,
+      budgetNote: event.budgetNote,
+    });
+    recoveredQueue = merged.queue;
+  }
+  assert.equal(recoveredQueue.length, 2, "reconnection must deduplicate both existing alert cards");
+  assert.equal(
+    recoveredQueue.find((alert) => alert.serviceId === recoveryFirstServiceId)?.expiresAt,
+    firstOriginalExpiry,
+    "replaying a delivery must preserve its original alert expiry",
+  );
+  assert.equal(
+    recoveredQueue.find((alert) => alert.serviceId === recoveryFirstServiceId)?.modalExpiresAt,
+    firstOriginalModalExpiry,
+    "replaying a delivery must preserve its original modal expiry",
+  );
+
+  const recoveryWorkerHeaders = {
+    Authorization: `Bearer ${signToken({
+      id: receiptRecoveryWorker.id,
+      email: receiptRecoveryWorker.email,
+      role: receiptRecoveryWorker.role,
+    })}`,
+  };
+  const skipRecoveredAlert = await fetch(
+    `${BASE_URL}/api/alert-sessions/${recoveryFirstServiceId}/skip`,
+    { method: "PATCH", headers: recoveryWorkerHeaders },
+  );
+  assert.equal(skipRecoveredAlert.status, 200, `the first recovered alert could not be skipped: ${await skipRecoveredAlert.text()}`);
+  const [remainingRecoverySession] = await db.select().from(alertSessionsTable).where(and(
+    eq(alertSessionsTable.serviceId, recoverySecondServiceId),
+    eq(alertSessionsTable.workerId, receiptRecoveryWorker.id),
+  )).limit(1);
+  const remainingRecoverySlots = await db.select({ serviceId: workerAlertSlotsTable.serviceId })
+    .from(workerAlertSlotsTable).where(and(
+      eq(workerAlertSlotsTable.workerId, receiptRecoveryWorker.id),
+      eq(workerAlertSlotsTable.serviceId, recoverySecondServiceId),
+    ));
+  assert.equal(remainingRecoverySession?.response, "pending", "acting on the first alert must not close the second session");
+  assert.equal(remainingRecoverySlots.length, 1, "acting on the first alert must keep the other service reservation");
+  assert.deepEqual(
+    recoveredQueue.filter((alert) => alert.serviceId !== recoveryFirstServiceId)
+      .map((alert) => alert.serviceId),
+    [recoverySecondServiceId],
+    "removing one recovered card must leave the other service alert visible",
+  );
+  const clearRemainingRecoveryAlert = await fetch(
+    `${BASE_URL}/api/alert-sessions/${recoverySecondServiceId}/skip`,
+    { method: "PATCH", headers: recoveryWorkerHeaders },
+  );
+  assert.equal(
+    clearRemainingRecoveryAlert.status,
+    200,
+    `the second recovered alert could not be cleared: ${await clearRemainingRecoveryAlert.text()}`,
+  );
 
   const startedAt = Date.now();
   const response = await fetch(`${BASE_URL}/api/services`, {

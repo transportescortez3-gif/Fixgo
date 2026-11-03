@@ -49,6 +49,8 @@ export default function ServiceAlertModal() {
       Math.max(0, Math.floor((alert.expiresAt - Date.now()) / 1000)),
     ])),
   );
+  const modalQueue = queue.filter((alert) => alert.modalExpiresAt > Date.now());
+  const hasModalAlerts = modalQueue.length > 0;
 
   // Wrapper que sincroniza React state ↔ módulo en cada cambio
   const setQueue = useCallback((fn: QueuedServiceAlert[] | ((prev: QueuedServiceAlert[]) => QueuedServiceAlert[])) => {
@@ -175,8 +177,12 @@ export default function ServiceAlertModal() {
       return;
     }
 
-    startAudio();
-    if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+    if (hasModalAlerts) {
+      startAudio();
+      if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+    } else {
+      stopAudio();
+    }
     const updateCountdowns = () => {
       const now = Date.now();
       const next: Record<number, number> = {};
@@ -191,7 +197,7 @@ export default function ServiceAlertModal() {
     stopCountdown();
     countdownRef.current = setInterval(updateCountdowns, 500);
     return () => stopCountdown();
-  }, [queue.length > 0, handleSkip, startAudio, stopAudio, stopCountdown]);
+  }, [queue.length > 0, hasModalAlerts, handleSkip, startAudio, stopAudio, stopCountdown]);
 
   useEffect(() => () => {
     stopCountdown();
@@ -224,7 +230,7 @@ export default function ServiceAlertModal() {
             : "Conexión interrumpida. Intentando reconectar para recibir trabajos…"}
         </motion.div>
       )}
-      {queue.length > 0 && (
+      {hasModalAlerts && (
         <>
           {/* Backdrop */}
           <motion.div
@@ -235,14 +241,14 @@ export default function ServiceAlertModal() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
-            onClick={() => handleSkip(queue[0].serviceId)}
+            onClick={() => handleSkip(modalQueue[0].serviceId)}
           />
 
           {/* Todas las solicitudes activas permanecen visibles y desplazables. */}
           <div className="fixed inset-0 z-[9999] overflow-y-auto overscroll-contain px-3 py-3 sm:px-6 sm:py-6">
-            <div className="mx-auto grid w-full max-w-5xl grid-cols-1 items-start gap-3 sm:grid-cols-2 sm:gap-4">
+            <div className="mx-auto flex w-full max-w-2xl flex-col items-stretch gap-3">
               <AnimatePresence initial={false}>
-                {queue.map((alert) => {
+                {modalQueue.map((alert) => {
                   const secondsLeft = secondsById[alert.serviceId] ?? Math.max(0, Math.floor((alert.expiresAt - Date.now()) / 1000));
                   const isProMax = alert.phase === "promax";
                   const isUrgent = secondsLeft <= 10;
