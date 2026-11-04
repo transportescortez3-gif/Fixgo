@@ -25,6 +25,13 @@ import { NativeMap, type NativeMapHandle, type NativeMarkerSpec, type NativeCirc
 import { getLastKnownPosition, getGeolocationStatus, onGeolocationStatusChange, getCurrentPosition, type GeoStatus } from "@/lib/geolocation";
 import { GeoPermissionBanner } from "./geo-permission-banner";
 import { useSmoothPosition } from "@/lib/use-smooth-position";
+import {
+  getServiceRequestActionLabel,
+  getServiceRequestUrl,
+  goBackFromServiceSelection,
+  selectServiceCategory,
+  selectServiceSubcategory,
+} from "@/lib/service-selection";
 import { toast } from "sonner";
 import HomeAlerts from "@/components/home-alerts";
 import ActiveServiceQuickCard from "@/components/active-service-quick-card";
@@ -913,8 +920,6 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   const userLocation = useSmoothPosition();
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | null>(null);
   const [selectedSubcategoryId, setSelectedSubcategoryId] = useState<number | null>(null);
-  const [categoryListOpen, setCategoryListOpen] = useState(false);
-  const [subcategoryListOpen, setSubcategoryListOpen] = useState(false);
   const [serviceSelectionStep, setServiceSelectionStep] = useState<1 | 2 | 3>(1);
   const prefersReducedMotion = useReducedMotion();
   const [proposalsPanelOpen, setProposalsPanelOpen] = useState(false);
@@ -938,8 +943,6 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   useEffect(() => {
     setSelectedCategoryId(null);
     setSelectedSubcategoryId(null);
-    setCategoryListOpen(false);
-    setSubcategoryListOpen(false);
     setServiceSelectionStep(1);
     setCategoryBrowserOpen(false);
   }, [currentPath]);
@@ -1342,27 +1345,39 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   }, [chatProposal, acceptFromChatMutation, queryClient]);
 
   const handleSolicitar = () => {
-    const params = new URLSearchParams();
-    if (selectedCategoryId) params.set("categoryId", String(selectedCategoryId));
-    if (selectedSubcategoryId) params.set("subcategoryId", String(selectedSubcategoryId));
-    const qs = params.toString();
-    setLocation(`/services/new${qs ? `?${qs}` : ""}`);
+    setLocation(getServiceRequestUrl({
+      categoryId: selectedCategoryId,
+      subcategoryId: selectedSubcategoryId,
+      step: serviceSelectionStep,
+    }));
   };
 
   const handleSelectServiceCategory = (category: any) => {
-    setSelectedCategoryId(category.id);
-    setSelectedSubcategoryId(null);
-    setServiceSelectionStep(category.subcategories?.length > 0 ? 2 : 3);
+    const selection = selectServiceCategory(category);
+    setSelectedCategoryId(selection.categoryId);
+    setSelectedSubcategoryId(selection.subcategoryId);
+    setServiceSelectionStep(selection.step);
+  };
+
+  const handleSelectServiceSubcategory = (subcategoryId: number) => {
+    const selection = selectServiceSubcategory({
+      categoryId: selectedCategoryId,
+      subcategoryId: selectedSubcategoryId,
+      step: serviceSelectionStep,
+    }, subcategoryId);
+    setSelectedSubcategoryId(selection.subcategoryId);
+    setServiceSelectionStep(selection.step);
   };
 
   const handleServiceSelectionBack = () => {
-    if (serviceSelectionStep === 3 && subcategories.length > 0) {
-      setServiceSelectionStep(2);
-      return;
-    }
-    setSelectedCategoryId(null);
-    setSelectedSubcategoryId(null);
-    setServiceSelectionStep(1);
+    const selection = goBackFromServiceSelection({
+      categoryId: selectedCategoryId,
+      subcategoryId: selectedSubcategoryId,
+      step: serviceSelectionStep,
+    }, subcategories.length > 0);
+    setSelectedCategoryId(selection.categoryId);
+    setSelectedSubcategoryId(selection.subcategoryId);
+    setServiceSelectionStep(selection.step);
   };
 
   const handleCategoryBrowserNavigate = (categoryId: number, subcategoryId?: number) => {
@@ -1575,198 +1590,141 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
           <div className="w-10 h-1 bg-muted-foreground/30 rounded-full" />
         </div>
 
-        <p className="text-lg font-black text-foreground tracking-tight mb-3">
-          ¿Qué servicio necesitas?
-        </p>
-
-        {/* ── FILA CATEGORÍA ── */}
-        <button
-          type="button"
-          onClick={() => {
-            if (selectedCategoryId) {
-              setSelectedCategoryId(null);
-              setSelectedSubcategoryId(null);
-              setCategoryListOpen(false);
-              setSubcategoryListOpen(false);
-            } else {
-              setCategoryListOpen(v => !v);
-            }
-          }}
-          className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl border transition-all active:scale-[0.98] mb-1 ${
-            categoryListOpen
-              ? "border-primary bg-primary/10"
-              : "border-border/50 bg-card hover:border-primary/40 hover:bg-primary/5"
-          }`}
-        >
-          {selectedCategory && catStyle && CatIcon ? (
-            <>
-              <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${catStyle.bg} border-2 ${catStyle.border}`}>
-                <CatIcon className={`w-6 h-6 ${catStyle.color}`} strokeWidth={1.5} />
-              </div>
-              <span className="flex-1 text-left font-semibold text-foreground text-sm leading-tight">{selectedCategory.name}</span>
-              <X className="w-4 h-4 text-muted-foreground shrink-0" />
-            </>
+        <div className="flex items-center justify-between gap-3 mb-3">
+          {serviceSelectionStep > 1 ? (
+            <button
+              type="button"
+              onClick={handleServiceSelectionBack}
+              className="inline-flex min-h-10 items-center gap-1 rounded-xl px-2 text-sm font-semibold text-foreground hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+              Volver
+            </button>
           ) : (
-            <>
-              <div className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0 bg-muted/30 border border-border/40">
-                <LayoutGrid className="w-5 h-5 text-muted-foreground" />
-              </div>
-              <span className="flex-1 text-left text-muted-foreground text-sm">Selecciona una categoría...</span>
-              <ChevronDown className={`w-5 h-5 text-muted-foreground shrink-0 transition-transform ${categoryListOpen ? "rotate-180" : ""}`} />
-            </>
+            <h2 className="text-lg font-black tracking-tight text-foreground">
+              ¿Qué servicio necesitas?
+            </h2>
           )}
-        </button>
+          <span
+            className="ml-auto rounded-full border border-border/60 px-3 py-1 text-xs font-semibold text-muted-foreground"
+            aria-label={`Paso ${serviceSelectionStep === 3 && selectedCategory?.subcategories?.length === 0 ? 2 : serviceSelectionStep} de ${selectedCategory?.subcategories?.length === 0 ? 2 : 3}`}
+          >
+            Paso {serviceSelectionStep === 3 && selectedCategory?.subcategories?.length === 0 ? 2 : serviceSelectionStep}
+            {" de "}
+            {selectedCategory?.subcategories?.length === 0 ? 2 : 3}
+          </span>
+        </div>
 
-        {/* Lista inline de categorías */}
-        <AnimatePresence initial={false}>
-          {categoryListOpen && !selectedCategoryId && (
-            <motion.div
-              key="cat-list"
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              transition={{ duration: 0.22, ease: "easeOut" }}
-              className="overflow-hidden mb-1"
-            >
-              <div className="max-h-52 overflow-y-auto rounded-2xl border border-border/40 bg-card divide-y divide-border/20">
-                {categoriesList.map((cat: any) => {
-                  const style = getCategoryStyle(cat.icon);
-                  const Icon = style.icon;
-                  return (
-                    <button
-                      key={cat.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedCategoryId(cat.id);
-                        setSelectedSubcategoryId(null);
-                        setCategoryListOpen(false);
-                        setSubcategoryListOpen(true);
-                      }}
-                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-primary/8 active:bg-primary/15 transition-colors text-left"
-                    >
-                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${style.bg} border ${style.border}`}>
-                        <Icon className={`w-5 h-5 ${style.color}`} strokeWidth={1.5} />
-                      </div>
-                      <span className="flex-1 font-semibold text-foreground text-sm">{cat.name}</span>
-                      {Array.isArray(cat.subcategories) && cat.subcategories.length > 0 && (
-                        <span className="text-[11px] text-muted-foreground mr-1">{cat.subcategories.length}</span>
-                      )}
-                      <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
-                    </button>
-                  );
-                })}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── FILA ESPECIALIDAD ── aparece tras seleccionar categoría */}
-        <AnimatePresence initial={false}>
-          {selectedCategory && subcategories.length > 0 && (
-            <motion.div
-              key="sub-row"
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              transition={{ duration: 0.2, ease: "easeOut" }}
-              className="overflow-hidden"
-            >
-              <button
-                type="button"
-                onClick={() => {
-                  if (selectedSubcategoryId) {
-                    setSelectedSubcategoryId(null);
-                    setSubcategoryListOpen(false);
-                  } else {
-                    setSubcategoryListOpen(v => !v);
-                  }
-                }}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl border transition-all active:scale-[0.98] mb-1 ${
-                  subcategoryListOpen
-                    ? "border-primary bg-primary/10"
-                    : "border-border/50 bg-card hover:border-primary/40 hover:bg-primary/5"
-                }`}
-              >
-                {selectedSubcategoryId && catStyle && CatIcon ? (
-                  <>
-                    <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${catStyle.bg} border-2 ${catStyle.border}`}>
-                      <CatIcon className={`w-6 h-6 ${catStyle.color}`} strokeWidth={1.5} />
-                    </div>
-                    <span className="flex-1 text-left font-semibold text-foreground text-sm leading-tight">
-                      {subcategories.find((s: any) => s.id === selectedSubcategoryId)?.name}
-                    </span>
-                    <X className="w-4 h-4 text-muted-foreground shrink-0" />
-                  </>
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.section
+            key={`client-service-step-${serviceSelectionStep}-${selectedCategoryId ?? "none"}`}
+            initial={prefersReducedMotion ? false : { opacity: 0, x: 14 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={prefersReducedMotion ? undefined : { opacity: 0, x: -14 }}
+            transition={{ duration: prefersReducedMotion ? 0 : 0.18, ease: "easeOut" }}
+            aria-live="polite"
+            className="max-h-[min(46vh,24rem)] overflow-y-auto overscroll-contain"
+          >
+            {serviceSelectionStep === 1 ? (
+              <>
+                {categoriesLoading ? (
+                  <div role="status" className="flex min-h-28 items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    Cargando categorías…
+                  </div>
+                ) : categoriesError && categoriesList.length === 0 ? (
+                  <div role="alert" className="flex flex-col items-center gap-2 py-5 text-center">
+                    <p className="text-sm font-semibold text-foreground">No pudimos cargar las categorías</p>
+                    <p className="text-xs text-muted-foreground">Revisa tu conexión e inténtalo de nuevo.</p>
+                    <Button type="button" variant="outline" size="sm" onClick={() => { void refetchCategories(); }} disabled={categoriesFetching}>
+                      {categoriesFetching ? "Reintentando…" : "Reintentar"}
+                    </Button>
+                  </div>
+                ) : categoriesList.length === 0 ? (
+                  <p className="py-6 text-center text-sm text-muted-foreground">
+                    Aún no hay categorías disponibles.
+                  </p>
                 ) : (
-                  <>
-                    <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${catStyle?.bg ?? "bg-muted/30"} border ${catStyle?.border ?? "border-border/40"}`}>
-                      <ChevronRight className={`w-5 h-5 ${catStyle?.color ?? "text-muted-foreground"}`} />
-                    </div>
-                    <span className="flex-1 text-left text-muted-foreground text-sm">Selecciona una especialidad...</span>
-                    <ChevronDown className={`w-5 h-5 text-muted-foreground shrink-0 transition-transform ${subcategoryListOpen ? "rotate-180" : ""}`} />
-                  </>
-                )}
-              </button>
-
-              {/* Lista inline de especialidades */}
-              <AnimatePresence initial={false}>
-                {subcategoryListOpen && !selectedSubcategoryId && (
-                  <motion.div
-                    key="sub-list"
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                    transition={{ duration: 0.2, ease: "easeOut" }}
-                    className="overflow-hidden mb-1"
-                  >
-                    <div className="max-h-48 overflow-y-auto rounded-2xl border border-primary/30 bg-card divide-y divide-border/20">
-                      {subcategories.map((sub: any) => (
+                  <div className="space-y-2">
+                    {categoriesList.map((category: any) => {
+                      const style = getCategoryStyle(category.icon);
+                      const Icon = style.icon;
+                      return (
                         <button
-                          key={sub.id}
+                          key={category.id}
                           type="button"
-                          onClick={() => {
-                            setSelectedSubcategoryId(sub.id);
-                            setSubcategoryListOpen(false);
-                          }}
-                          className="w-full flex items-center gap-3 px-4 py-3 hover:bg-primary/10 active:bg-primary/20 transition-colors text-left"
+                          onClick={() => handleSelectServiceCategory(category)}
+                          className="flex w-full items-center gap-3 rounded-2xl border border-border/50 bg-card px-4 py-3 text-left transition-colors hover:border-primary/50 hover:bg-primary/5 active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                         >
-                          {catStyle && CatIcon && (
-                            <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${catStyle.bg} border ${catStyle.border}`}>
-                              <CatIcon className={`w-5 h-5 ${catStyle.color}`} strokeWidth={1.5} />
-                            </div>
-                          )}
-                          <span className="flex-1 font-semibold text-foreground text-sm">{sub.name}</span>
-                          <ChevronRight className="w-4 h-4 text-primary shrink-0" />
+                          <span className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border ${style.bg} ${style.border}`}>
+                            <Icon className={`h-5 w-5 ${style.color}`} strokeWidth={1.7} aria-hidden="true" />
+                          </span>
+                          <span className="min-w-0 flex-1 font-semibold text-foreground">{category.name}</span>
+                          <ChevronRight className="h-5 w-5 shrink-0 text-muted-foreground" aria-hidden="true" />
                         </button>
-                      ))}
-                    </div>
-                  </motion.div>
+                      );
+                    })}
+                  </div>
                 )}
-              </AnimatePresence>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Botón solicitar */}
-        <AnimatePresence>
-          {selectedCategoryId && (
-            <motion.div
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 6 }}
-              transition={{ duration: 0.18 }}
-            >
-              <Button
-                onClick={handleSolicitar}
-                className="w-full fixgo-gradient font-bold text-white rounded-2xl h-12 text-sm shadow-lg active:scale-[0.98] transition-all"
-              >
-                {selectedSubcategoryId
-                  ? `Solicitar: ${subcategories.find((s: any) => s.id === selectedSubcategoryId)?.name}`
-                  : `Solicitar en ${selectedCategory?.name}`
-                }
-              </Button>
-            </motion.div>
-          )}
+              </>
+            ) : serviceSelectionStep === 2 ? (
+              <>
+                <div className="mb-3 flex items-center gap-3 rounded-2xl border border-primary/30 bg-primary/5 px-3 py-2.5">
+                  {catStyle && CatIcon && (
+                    <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${catStyle.bg} ${catStyle.border}`}>
+                      <CatIcon className={`h-5 w-5 ${catStyle.color}`} strokeWidth={1.7} aria-hidden="true" />
+                    </span>
+                  )}
+                  <div className="min-w-0">
+                    <p className="text-xs text-muted-foreground">Categoría elegida</p>
+                    <p className="truncate font-bold text-foreground">{selectedCategory?.name}</p>
+                  </div>
+                </div>
+                <h2 className="mb-3 text-base font-bold text-foreground">Selecciona una especialidad</h2>
+                <div className="space-y-2">
+                  {subcategories.map((subcategory: any) => {
+                    const isSelected = subcategory.id === selectedSubcategoryId;
+                    return (
+                      <button
+                        key={subcategory.id}
+                        type="button"
+                        onClick={() => handleSelectServiceSubcategory(subcategory.id)}
+                        className={`flex w-full items-center justify-between gap-3 rounded-2xl border px-4 py-3.5 text-left font-semibold text-foreground transition-colors active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                          isSelected
+                            ? "border-primary bg-primary/10"
+                            : "border-border/50 bg-card hover:border-primary/50 hover:bg-primary/5"
+                        }`}
+                      >
+                        <span>{subcategory.name}</span>
+                        <ChevronRight className="h-5 w-5 shrink-0 text-primary" aria-hidden="true" />
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="mb-3 text-base font-bold text-foreground">Servicio confirmado</p>
+                <div className="rounded-2xl border border-primary/40 bg-primary/5 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {selectedCategory?.name}
+                  </p>
+                  <p className="mt-1 text-lg font-black text-foreground">
+                    {subcategories.find((item: any) => item.id === selectedSubcategoryId)?.name ?? selectedCategory?.name}
+                  </p>
+                </div>
+                <Button
+                  onClick={handleSolicitar}
+                  className="service-selection-cta mt-4 h-12 w-full rounded-2xl fixgo-gradient text-sm font-bold text-white shadow-lg"
+                >
+                  {getServiceRequestActionLabel(
+                    selectedCategory?.name,
+                    subcategories.find((item: any) => item.id === selectedSubcategoryId)?.name,
+                  )}
+                </Button>
+              </>
+            )}
+          </motion.section>
         </AnimatePresence>
       </div>
       )}

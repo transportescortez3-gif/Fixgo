@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   getServiceRequestUrl,
+  getServiceRequestActionLabel,
   getServiceRequestPrefill,
   findServiceRequestSubcategory,
   goBackFromServiceSelection,
@@ -75,6 +76,11 @@ assert.deepEqual(painting, {
 });
 assert.equal(getServiceRequestUrl(painting), "/services/new?categoryId=24");
 assert.deepEqual(goBackFromServiceSelection(painting, false), INITIAL_SERVICE_SELECTION);
+assert.equal(getServiceRequestActionLabel("Gasfitería"), "Pedir Gasfíter Ahora →");
+assert.equal(
+  getServiceRequestActionLabel("Mantenimiento y Reparaciones", "Electricidad"),
+  "Pedir Electricidad Ahora →",
+);
 
 // Selecting another category after backing out must not reuse the old specialty.
 const newSelection = selectServiceCategory({ id: 35, subcategories: [{ id: 351 }] });

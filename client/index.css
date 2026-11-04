@@ -425,6 +425,20 @@
   transform-origin: center;
 }
 
+@keyframes service-selection-cta-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.018); }
+}
+.service-selection-cta {
+  transform-origin: center;
+  animation: service-selection-cta-pulse 2.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .service-selection-cta {
+    animation: none;
+  }
+}
+
 @keyframes typing-dot {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
   30% { transform: translateY(-3px); opacity: 1; }

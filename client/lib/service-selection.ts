@@ -81,3 +81,13 @@ export function getServiceRequestUrl(selection: ServiceSelection): string {
   const query = params.toString();
   return `/services/new${query ? `?${query}` : ""}`;
 }
+
+export function getServiceRequestActionLabel(
+  categoryName?: string | null,
+  subcategoryName?: string | null,
+): string {
+  const selectedName = subcategoryName?.trim() || categoryName?.trim() || "servicio";
+  const normalized = selectedName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const actionName = normalized.includes("gasfiter") ? "Gasfíter" : selectedName;
+  return `Pedir ${actionName} Ahora →`;
+}

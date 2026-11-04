@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { memoryLocation } from "wouter/memory-location";
 import {
+  getCategoriesStepUrl,
   getCategoryBrowserCategoryId,
   getCategoryBrowserReturnUrl,
   getCategoryBrowserServiceRequestUrl,
+  getCategoryBrowserSubcategoryId,
+  isCategoryBrowserConfirmation,
   isHomeCategoryBrowserLocation,
 } from "./category-browser-navigation";
 
@@ -28,6 +31,16 @@ const categoriesReturnUrl = getCategoryBrowserReturnUrl("categories", 12);
 assert.equal(categoriesReturnUrl, "/categories?categoryId=12");
 assert.equal(getCategoryBrowserCategoryId("?categoryId=12"), 12);
 assert.equal(getCategoryBrowserCategoryId("?categoryId=0"), null);
+assert.equal(getCategoryBrowserSubcategoryId("?subcategoryId=121"), 121);
+assert.equal(getCategoryBrowserSubcategoryId("?subcategoryId=-1"), null);
+assert.equal(isCategoryBrowserConfirmation("?step=confirm"), true);
+assert.equal(isCategoryBrowserConfirmation("?step=specialties"), false);
+assert.equal(getCategoriesStepUrl(), "/categories");
+assert.equal(getCategoriesStepUrl(12), "/categories?categoryId=12");
+assert.equal(
+  getCategoriesStepUrl(12, 121, true),
+  "/categories?categoryId=12&subcategoryId=121&step=confirm",
+);
 
 const homeReturnUrl = getCategoryBrowserReturnUrl("home", 35);
 assert.equal(homeReturnUrl, "/?categoryId=35&categoryBrowser=1");
