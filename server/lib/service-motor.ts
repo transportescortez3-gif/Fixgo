@@ -7,6 +7,9 @@ import { createNotification, createNotifications } from "./createNotification";
 import { logger } from "./logger";
 import {
   getActiveAlertExclusionReasons,
+  isLateAlertPhase,
+  isProMaxAlertPhase,
+  getLateAlertWindow,
   isWorkerWithinAlertRadius,
   NEARBY_DELAY_MS,
   resolveLatestWorkerPlans,
@@ -83,11 +86,161 @@ async function getClientInfo(clientId: number) {
   return client ?? null;
 }
 
+async function addLateActiveAlertSessions(
+  workerId: number,
+  now: Date,
+): Promise<Array<{ serviceId: number; availableAt: Date }>> {
+  const [worker] = await db.select({
+    role: usersTable.role,
+    lat: usersTable.lat,
+    lng: usersTable.lng,
+    alertRadiusKm: usersTable.alertRadiusKm,
+  }).from(usersTable).where(eq(usersTable.id, workerId)).limit(1);
+  if (!worker || !(await isActiveWorkerRecipient(workerId, worker.role))) return [];
+
+  const [planRows, existingSessions, sourceRows, assigned] = await Promise.all([
+    db.select({
+      userId: userSubscriptionsTable.userId,
+      id: userSubscriptionsTable.id,
+      planCode: userSubscriptionsTable.planCode,
+      features: subscriptionPlansTable.features,
+      createdAt: userSubscriptionsTable.createdAt,
+    })
+      .from(userSubscriptionsTable)
+      .innerJoin(subscriptionPlansTable, eq(userSubscriptionsTable.planCode, subscriptionPlansTable.code))
+      .where(and(
+        eq(userSubscriptionsTable.userId, workerId),
+        sql`${userSubscriptionsTable.status} IN ('active','trialing')`,
+      )),
+    db.select({ serviceId: alertSessionsTable.serviceId })
+      .from(alertSessionsTable)
+      .where(eq(alertSessionsTable.workerId, workerId)),
+    db.select({
+      serviceId: servicesTable.id,
+      categoryId: servicesTable.categoryId,
+      isDirectRequest: servicesTable.isDirectRequest,
+      directWorkerId: servicesTable.directWorkerId,
+      serviceLat: servicesTable.lat,
+      serviceLng: servicesTable.lng,
+      sentAt: alertSessionsTable.sentAt,
+      expiresAt: alertSessionsTable.expiresAt,
+      modalExpiresAt: alertSessionsTable.modalExpiresAt,
+      phase: alertSessionsTable.phase,
+    })
+      .from(alertSessionsTable)
+      .innerJoin(servicesTable, eq(servicesTable.id, alertSessionsTable.serviceId))
+      .innerJoin(workerCategoriesTable, and(
+        eq(workerCategoriesTable.workerId, workerId),
+        eq(workerCategoriesTable.categoryId, servicesTable.categoryId),
+      ))
+      .where(and(
+        eq(servicesTable.status, "alerting"),
+        eq(alertSessionsTable.response, "pending"),
+        gt(alertSessionsTable.expiresAt, now),
+        gt(alertSessionsTable.modalExpiresAt, now),
+      )),
+    db.select({ id: servicesTable.id })
+      .from(servicesTable)
+      .where(and(
+        eq(servicesTable.workerId, workerId),
+        inArray(servicesTable.status, ["accepted", "in_progress"]),
+      ))
+      .limit(1),
+  ]);
+  if (assigned.length > 0) return [];
+
+  const existingServiceIds = new Set(existingSessions.map(({ serviceId }) => serviceId));
+  const plans = resolveLatestWorkerPlans(planRows.map((row) => ({
+    ...row,
+    features: (row.features ?? {}) as Record<string, unknown>,
+  })));
+  const plan = plans.get(workerId);
+  const isProMax = !!plan && PROMAX_PLAN_CODES.includes(plan.planCode);
+  const planRadiusKm = typeof plan?.features.radius_km === "number"
+    ? plan.features.radius_km
+    : 5;
+  const sourceByService = new Map<number, typeof sourceRows>();
+  for (const row of sourceRows) {
+    if (row.isDirectRequest && row.directWorkerId !== workerId) continue;
+    const rows = sourceByService.get(row.serviceId) ?? [];
+    rows.push(row);
+    sourceByService.set(row.serviceId, rows);
+  }
+
+  const additions: Array<typeof alertSessionsTable.$inferInsert> = [];
+  const schedules: Array<{ serviceId: number; availableAt: Date }> = [];
+  for (const [serviceId, rows] of sourceByService) {
+    if (existingServiceIds.has(serviceId) || rows.length === 0) continue;
+    const source = rows.reduce((latest, row) =>
+      row.modalExpiresAt! > latest.modalExpiresAt! ? row : latest
+    );
+    const cohortStartedAt = rows.reduce((earliest, row) => {
+      const rowStart = new Date(
+        row.sentAt.getTime() - (row.phase === "nearby" ? NEARBY_DELAY_MS : 0),
+      );
+      return rowStart < earliest ? rowStart : earliest;
+    }, source.sentAt);
+    const distanceKm =
+      worker.lat != null && worker.lng != null &&
+      source.serviceLat != null && source.serviceLng != null
+        ? haversineKm(worker.lat, worker.lng, source.serviceLat, source.serviceLng)
+        : null;
+    if (!isWorkerWithinAlertRadius({
+      isProMax,
+      profileRadiusKm: worker.alertRadiusKm,
+      planRadiusKm,
+      distanceKm,
+      hasServiceCoordinates: source.serviceLat != null && source.serviceLng != null,
+    })) continue;
+
+    const window = getLateAlertWindow({
+      now,
+      cohortStartedAt,
+      modalExpiresAt: source.modalExpiresAt!,
+      expiresAt: source.expiresAt,
+      phase: isProMax ? "promax" : "nearby",
+    });
+    if (!window) continue;
+
+    additions.push({
+      serviceId,
+      workerId,
+      response: "pending",
+      sentAt: cohortStartedAt,
+      availableAt: window.availableAt,
+      modalExpiresAt: window.modalExpiresAt,
+      expiresAt: window.expiresAt,
+      phase: isProMax ? "late_promax" : "late_nearby",
+      distanceKm,
+    });
+    schedules.push({ serviceId, availableAt: window.availableAt });
+  }
+
+  if (additions.length === 0) return [];
+  const inserted = await db.insert(alertSessionsTable)
+    .values(additions)
+    .onConflictDoNothing()
+    .returning({ serviceId: alertSessionsTable.serviceId });
+  const insertedIds = new Set(inserted.map(({ serviceId }) => serviceId));
+  const insertedSchedules = schedules.filter(({ serviceId }) => insertedIds.has(serviceId));
+  if (insertedSchedules.length > 0) {
+    logger.info({
+      workerId,
+      serviceIds: insertedSchedules.map(({ serviceId }) => serviceId),
+    }, "motor: late worker eligible for active alert");
+  }
+  return insertedSchedules;
+}
+
 /**
  * Atomically reserves one worker/service alert slot. Calls without a target
  * service dispatch every currently eligible pending request.
  */
-export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?: number): Promise<boolean> {
+export async function dispatchNextQueuedAlert(
+  workerId: number,
+  targetServiceId?: number,
+  preserveWindow = false,
+): Promise<boolean> {
   if (targetServiceId === undefined) {
     const now = new Date();
     const pending = await db.select({ serviceId: alertSessionsTable.serviceId })
@@ -214,7 +367,11 @@ export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?
     });
     if (!slot) return { dispatch: null, expiredServiceIds };
 
-    const modalExpiresAt = new Date(now.getTime() + ACTIVE_MODAL_TIMEOUT_MS);
+    const keepOriginalWindow = preserveWindow || isLateAlertPhase(candidate.phase);
+    const modalExpiresAt = keepOriginalWindow && candidate.modalExpiresAt
+      ? candidate.modalExpiresAt
+      : new Date(now.getTime() + ACTIVE_MODAL_TIMEOUT_MS);
+    const expiresAt = keepOriginalWindow ? candidate.expiresAt : new Date(now.getTime() + ACTIVE_TIMEOUT_MS);
     const [session] = await tx.update(alertSessionsTable)
       .set({
         deliveredAt: now,
@@ -222,7 +379,7 @@ export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?
         deliveryId,
         sentAt: now,
         modalExpiresAt,
-        expiresAt: new Date(now.getTime() + ACTIVE_TIMEOUT_MS),
+        expiresAt,
       })
       .where(and(
         eq(alertSessionsTable.id, candidate.sessionId),
@@ -271,7 +428,7 @@ export async function dispatchNextQueuedAlert(workerId: number, targetServiceId?
   const distanceKm = dispatch.distanceKm == null ? null : Math.round(dispatch.distanceKm * 10) / 10;
   const remainingSeconds = Math.max(1, Math.ceil((dispatch.expiresAt.getTime() - Date.now()) / 1000));
   const modalSeconds = Math.max(0, Math.ceil((dispatch.modalExpiresAt.getTime() - Date.now()) / 1000));
-  const phase = dispatch.phase === "promax" ? "promax" : "nearby";
+  const phase = isProMaxAlertPhase(dispatch.phase) ? "promax" : "nearby";
 
   // Serialize the final validation and socket emit with assignment cleanup.
   // If an assignment won while the reservation was being created, its cleanup
@@ -445,7 +602,7 @@ export async function refreshProMaxBudgetAlerts(serviceId: number): Promise<void
     ))
     .where(and(
       eq(alertSessionsTable.serviceId, serviceId),
-      eq(alertSessionsTable.phase, "promax"),
+      inArray(alertSessionsTable.phase, ["promax", "late_promax"]),
       eq(alertSessionsTable.response, "pending"),
       isNotNull(alertSessionsTable.deliveryId),
       gt(alertSessionsTable.expiresAt, now),
@@ -1625,12 +1782,16 @@ export async function reemitActiveAlertsForWorker(workerId: number): Promise<voi
       role: usersTable.role,
       status: usersTable.status,
       isAvailable: usersTable.isAvailable,
+      alertCooldownUntil: usersTable.alertCooldownUntil,
+      suspendedUntil: usersTable.suspendedUntil,
     }).from(usersTable).where(eq(usersTable.id, workerId)).limit(1);
     if (
       !worker ||
       !(await isActiveWorkerRecipient(workerId, worker.role)) ||
       worker.status !== "active" ||
-      !worker.isAvailable
+      !worker.isAvailable ||
+      (worker.alertCooldownUntil && worker.alertCooldownUntil > now) ||
+      (worker.suspendedUntil && worker.suspendedUntil > now)
     ) return;
 
     const [assignedService] = await db.select({ id: servicesTable.id })
@@ -1649,6 +1810,20 @@ export async function reemitActiveAlertsForWorker(workerId: number): Promise<voi
       .from(workerAlertSlotsTable)
       .where(eq(workerAlertSlotsTable.workerId, workerId))
       .orderBy(asc(workerAlertSlotsTable.updatedAt));
+    const lateSessions = await addLateActiveAlertSessions(workerId, now);
+    const dispatchLateSession = async (session: { serviceId: number; availableAt: Date }) => {
+      const delay = Math.max(0, session.availableAt.getTime() - Date.now());
+      if (delay === 0) {
+        await dispatchNextQueuedAlert(workerId, session.serviceId, true);
+        return;
+      }
+      setTimeout(() => {
+        dispatchNextQueuedAlert(workerId, session.serviceId, true).catch((error) =>
+          logger.error({ err: error, serviceId: session.serviceId, workerId }, "late alert dispatch error")
+        );
+      }, delay);
+    };
+    await Promise.all(lateSessions.map(dispatchLateSession));
     if (slots.length === 0) {
       await dispatchNextQueuedAlert(workerId);
       return;
@@ -1744,10 +1919,10 @@ export async function reemitActiveAlertsForWorker(workerId: number): Promise<voi
         clientName: client?.name ?? "Cliente",
         convivenciaScore: client?.clientRating ?? null,
         distanceKm,
-        phase: active.phase === "promax" ? "promax" : "nearby",
+        phase: isProMaxAlertPhase(active.phase) ? "promax" : "nearby",
         totalSeconds: Math.max(1, Math.ceil((active.expiresAt.getTime() - Date.now()) / 1000)),
         modalSeconds: Math.max(0, Math.ceil(((active.modalExpiresAt?.getTime() ?? Date.now()) - Date.now()) / 1000)),
-        budgetNote: active.phase === "promax" ? (active.budgetNote ?? null) : null,
+        budgetNote: isProMaxAlertPhase(active.phase) ? (active.budgetNote ?? null) : null,
       });
       return { sent: true };
     });

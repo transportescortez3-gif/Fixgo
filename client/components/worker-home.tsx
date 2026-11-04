@@ -532,7 +532,7 @@ export default function WorkerHome({ visible }: { visible?: boolean } = {}) {
             {effectiveAvailable ? (
               <>
                 <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse flex-shrink-0" />
-                <span>EN LÍNEA — Recibiendo solicitudes</span>
+                <span>DISPONIBLE</span>
               </>
             ) : (
               <>

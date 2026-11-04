@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import {
   canReceiveWorkerAlerts,
   getActiveAlertExclusionReasons,
+  getLateAlertWindow,
+  isLateAlertPhase,
+  isProMaxAlertPhase,
   isWorkerWithinAlertRadius,
   NEARBY_DELAY_MS,
   resolveLatestWorkerPlans,
@@ -56,6 +59,76 @@ assert.deepEqual(
   ],
   "diagnostics should identify each active-alert exclusion without changing recipient selection",
 );
+assert.deepEqual(
+  getActiveAlertExclusionReasons({
+    ...eligibleDiagnostic,
+    alertCooldownUntil: diagnosticNow,
+    suspendedUntil: diagnosticNow,
+  }),
+  ["alert_cooldown_active", "account_suspended"],
+  "cooldown and suspension remain active through their exact end time",
+);
+
+const lateAlertNow = new Date("2026-11-03T12:00:20Z");
+const lateAlertStart = new Date("2026-11-03T12:00:00Z");
+const originalModalDeadline = new Date("2026-11-03T12:01:00Z");
+const originalAlertDeadline = new Date("2026-11-03T12:02:00Z");
+assert.deepEqual(
+  getLateAlertWindow({
+    now: lateAlertNow,
+    cohortStartedAt: lateAlertStart,
+    modalExpiresAt: originalModalDeadline,
+    expiresAt: originalAlertDeadline,
+    phase: "promax",
+  }),
+  {
+    availableAt: lateAlertNow,
+    modalExpiresAt: originalModalDeadline,
+    expiresAt: originalAlertDeadline,
+  },
+  "late recipients keep the original expiry rather than receiving a fresh timer",
+);
+assert.deepEqual(
+  getLateAlertWindow({
+    now: new Date("2026-11-03T12:00:05Z"),
+    cohortStartedAt: lateAlertStart,
+    modalExpiresAt: originalModalDeadline,
+    expiresAt: originalAlertDeadline,
+    phase: "nearby",
+  }),
+  {
+    availableAt: new Date("2026-11-03T12:00:10Z"),
+    modalExpiresAt: originalModalDeadline,
+    expiresAt: originalAlertDeadline,
+  },
+  "nearby recipients preserve the existing ten-second phase delay",
+);
+assert.equal(
+  getLateAlertWindow({
+    now: originalModalDeadline,
+    cohortStartedAt: lateAlertStart,
+    modalExpiresAt: originalModalDeadline,
+    expiresAt: originalAlertDeadline,
+    phase: "promax",
+  }),
+  null,
+  "expired modal windows are not recovered",
+);
+assert.equal(
+  getLateAlertWindow({
+    now: new Date("2026-11-03T12:00:05Z"),
+    cohortStartedAt: lateAlertStart,
+    modalExpiresAt: new Date("2026-11-03T12:00:09Z"),
+    expiresAt: originalAlertDeadline,
+    phase: "nearby",
+  }),
+  null,
+  "a nearby recipient is not scheduled after the original modal window",
+);
+assert.equal(isLateAlertPhase("late_promax"), true);
+assert.equal(isLateAlertPhase("nearby"), false);
+assert.equal(isProMaxAlertPhase("late_promax"), true);
+assert.equal(isProMaxAlertPhase("late_nearby"), false);
 assert.deepEqual(
   getActiveAlertExclusionReasons({
     ...eligibleDiagnostic,

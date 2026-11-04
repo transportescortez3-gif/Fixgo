@@ -1,5 +1,32 @@
 export const NEARBY_DELAY_MS = 10_000;
 
+export function isProMaxAlertPhase(phase: string | null | undefined): boolean {
+  return phase === "promax" || phase === "late_promax";
+}
+
+export function isLateAlertPhase(phase: string | null | undefined): boolean {
+  return phase === "late_promax" || phase === "late_nearby";
+}
+
+export function getLateAlertWindow(input: {
+  now: Date;
+  cohortStartedAt: Date;
+  modalExpiresAt: Date;
+  expiresAt: Date;
+  phase: "promax" | "nearby";
+}): { availableAt: Date; modalExpiresAt: Date; expiresAt: Date } | null {
+  const { now, cohortStartedAt, modalExpiresAt, expiresAt, phase } = input;
+  if (modalExpiresAt <= now || expiresAt <= now) return null;
+
+  const nearbyAvailableAt = new Date(cohortStartedAt.getTime() + NEARBY_DELAY_MS);
+  const availableAt = phase === "nearby" && nearbyAvailableAt > now
+    ? nearbyAvailableAt
+    : now;
+
+  if (availableAt >= modalExpiresAt || availableAt >= expiresAt) return null;
+  return { availableAt, modalExpiresAt, expiresAt };
+}
+
 export interface ActiveAlertEligibilityDiagnosticInput {
   role: string;
   isAvailable: boolean;
