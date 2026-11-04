@@ -884,63 +884,7 @@ async function launchCombinedActivePhase(
           activeAsWorker: await isActiveWorkerRecipient(worker.id, worker.role),
         }))),
       ]);
-      const assignedWorkerIds = new Set(assignedRows.map((row) =
-      // Diagnostic only: include connected accounts even when an earlier SQL
-      // filter excluded them, so a missing recipient can be traced without
-      // changing eligibility or delaying dispatch.
-      void (async () => {
-        try {
-          const diagnosticUserIds = new Set([
-            ...allEligible.map((worker) => worker.id),
-            ...getOnlineUserSet(),
-          ]);
-          if (diagnosticUserIds.size === 0) return;
-          const diagnosticRows = await db.select({
-            id: usersTable.id,
-            role: usersTable.role,
-            isAvailable: usersTable.isAvailable,
-            status: usersTable.status,
-            alertCooldownUntil: usersTable.alertCooldownUntil,
-            suspendedUntil: usersTable.suspendedUntil,
-            matchedCategoryWorkerId: workerCategoriesTable.workerId,
-          })
-            .from(usersTable)
-            .leftJoin(workerCategoriesTable, and(
-              eq(workerCategoriesTable.workerId, usersTable.id),
-              eq(workerCategoriesTable.categoryId, service.categoryId!),
-            ))
-            .where(inArray(usersTable.id, [...diagnosticUserIds]));
-          const diagnosticWorkers = await Promise.all(diagnosticRows.map(async (worker) => {
-            const activeAsWorker = await isActiveWorkerRecipient(worker.id, worker.role);
-            const excludedBy = getActiveAlertExclusionReasons({
-              role: worker.role,
-              isAvailable: worker.isAvailable,
-              status: worker.status,
-              categoryMatches: worker.matchedCategoryWorkerId === worker.id,
-              alertCooldownUntil: worker.alertCooldownUntil,
-              suspendedUntil: worker.suspendedUntil,
-              activeAsWorker,
-              hasActiveService: assignedWorkerIds.has(worker.id),
-              now,
-            });
-            return {
-              workerId: worker.id,
-              connected: getOnlineUserSet().has(worker.id),
-              selectedForBaseEligibility: excludedBy.length === 0,
-              excludedBy,
-            };
-          }));
-          logger.info({
-            serviceId,
-            categoryId: service.categoryId,
-            workers: diagnosticWorkers,
-          }, "motor: active alert recipient eligibility diagnostics");
-        } catch (err) {
-          logger.warn({ err, serviceId }, "motor: active alert recipient diagnostics failed");
-        }
-      })();
-
-> row.workerId));
+      const assignedWorkerIds = new Set(assignedRows.map((row) => row.workerId));
       const activeWorkerById = new Map(roleChecks.map((row) => [row.workerId, row.activeAsWorker]));
       logger.info({
         serviceId,
@@ -997,6 +941,62 @@ async function launchCombinedActivePhase(
       isNotNull(servicesTable.workerId),
     ));
   const assignedWorkerIds = new Set(assignedRows.map((row) => row.workerId));
+
+  // Diagnostic only: include connected accounts even when an earlier SQL
+  // filter excluded them, so a missing recipient can be traced without
+  // changing eligibility or delaying dispatch.
+  void (async () => {
+    try {
+      const diagnosticUserIds = new Set([
+        ...allEligible.map((worker) => worker.id),
+        ...getOnlineUserSet(),
+      ]);
+      if (diagnosticUserIds.size === 0) return;
+      const diagnosticRows = await db.select({
+        id: usersTable.id,
+        role: usersTable.role,
+        isAvailable: usersTable.isAvailable,
+        status: usersTable.status,
+        alertCooldownUntil: usersTable.alertCooldownUntil,
+        suspendedUntil: usersTable.suspendedUntil,
+        matchedCategoryWorkerId: workerCategoriesTable.workerId,
+      })
+        .from(usersTable)
+        .leftJoin(workerCategoriesTable, and(
+          eq(workerCategoriesTable.workerId, usersTable.id),
+          eq(workerCategoriesTable.categoryId, service.categoryId!),
+        ))
+        .where(inArray(usersTable.id, [...diagnosticUserIds]));
+      const diagnosticWorkers = await Promise.all(diagnosticRows.map(async (worker) => {
+        const activeAsWorker = await isActiveWorkerRecipient(worker.id, worker.role);
+        const excludedBy = getActiveAlertExclusionReasons({
+          role: worker.role,
+          isAvailable: worker.isAvailable,
+          status: worker.status,
+          categoryMatches: worker.matchedCategoryWorkerId === worker.id,
+          alertCooldownUntil: worker.alertCooldownUntil,
+          suspendedUntil: worker.suspendedUntil,
+          activeAsWorker,
+          hasActiveService: assignedWorkerIds.has(worker.id),
+          now,
+        });
+        return {
+          workerId: worker.id,
+          connected: getOnlineUserSet().has(worker.id),
+          selectedForBaseEligibility: excludedBy.length === 0,
+          excludedBy,
+        };
+      }));
+      logger.info({
+        serviceId,
+        categoryId: service.categoryId,
+        workers: diagnosticWorkers,
+      }, "motor: active alert recipient eligibility diagnostics");
+    } catch (err) {
+      logger.warn({ err, serviceId }, "motor: active alert recipient diagnostics failed");
+    }
+  })();
+
 
   const excludedAssigned = activeRoleCandidates.filter(
     (candidate) => candidate.activeAsWorker && assignedWorkerIds.has(candidate.worker.id),
