@@ -934,15 +934,23 @@ export function getOnlineUserSet(): Set<number> {
   return new Set(onlineUsers.keys());
 }
 
-export async function isAdminInWorkerMode(userId: number): Promise<boolean> {
+async function isAccountInWorkerMode(userId: number, databaseRole: "admin" | "client"): Promise<boolean> {
   if (!io) return false;
   try {
     const sockets = await io.in(`user_${userId}`).fetchSockets();
     return sockets.some((socket) =>
-      canReceiveWorkerAlerts("admin", socket.data.activeRole, socket.data.originalRole)
+      canReceiveWorkerAlerts(databaseRole, socket.data.activeRole, socket.data.originalRole)
     );
   } catch (error) {
-    console.error("Could not check admin worker-mode sockets:", error);
+    console.error(`Could not check ${databaseRole} worker-mode sockets:`, error);
     return false;
   }
+}
+
+export async function isAdminInWorkerMode(userId: number): Promise<boolean> {
+  return isAccountInWorkerMode(userId, "admin");
+}
+
+export async function isClientInWorkerMode(userId: number): Promise<boolean> {
+  return isAccountInWorkerMode(userId, "client");
 }

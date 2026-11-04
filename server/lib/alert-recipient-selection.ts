@@ -16,7 +16,7 @@ export function getActiveAlertExclusionReasons(
   input: ActiveAlertEligibilityDiagnosticInput,
 ): string[] {
   const reasons: string[] = [];
-  if (input.role !== "worker" && input.role !== "admin") reasons.push("role_not_worker");
+  if (input.role !== "worker" && input.role !== "admin" && input.role !== "client") reasons.push("role_not_worker");
   if (!input.isAvailable) reasons.push("not_available");
   if (input.status !== "active") reasons.push("account_not_active");
   if (!input.categoryMatches) reasons.push("category_mismatch");
@@ -37,7 +37,9 @@ export function canReceiveWorkerAlerts(
   originalRole: string | null | undefined,
 ): boolean {
   return databaseRole === "worker" ||
-    (databaseRole === "admin" && activeRole === "worker" && originalRole === "admin");
+    ((databaseRole === "admin" || databaseRole === "client") &&
+      activeRole === "worker" &&
+      originalRole === databaseRole);
 }
 
 export interface ActiveWorkerPlanRow {

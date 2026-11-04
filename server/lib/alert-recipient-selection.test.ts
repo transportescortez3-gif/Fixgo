@@ -12,7 +12,8 @@ assert.equal(canReceiveWorkerAlerts("worker", "client", "worker"), true);
 assert.equal(canReceiveWorkerAlerts("admin", "worker", "admin"), true);
 assert.equal(canReceiveWorkerAlerts("admin", "admin", undefined), false);
 assert.equal(canReceiveWorkerAlerts("admin", "client", "admin"), false);
-assert.equal(canReceiveWorkerAlerts("client", "worker", "client"), false);
+assert.equal(canReceiveWorkerAlerts("client", "worker", "client"), true);
+assert.equal(canReceiveWorkerAlerts("client", "client", undefined), false);
 
 const diagnosticNow = new Date("2026-11-03T12:00:00Z");
 const eligibleDiagnostic = {
@@ -28,6 +29,11 @@ const eligibleDiagnostic = {
 };
 assert.deepEqual(getActiveAlertExclusionReasons(eligibleDiagnostic), []);
 assert.deepEqual(
+  getActiveAlertExclusionReasons({ ...eligibleDiagnostic, role: "client" }),
+  [],
+  "a client-base account switched into an authenticated worker session is eligible",
+);
+assert.deepEqual(
   getActiveAlertExclusionReasons({
     ...eligibleDiagnostic,
     role: "client",
@@ -40,7 +46,6 @@ assert.deepEqual(
     hasActiveService: true,
   }),
   [
-    "role_not_worker",
     "not_available",
     "account_not_active",
     "category_mismatch",

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { db, servicesTable, usersTable, alertSessionsTable, workerAlertSlotsTable, proposalsTable, workerCategoriesTable, messagesTable, subscriptionPlansTable } from "../db";
 import { userSubscriptionsTable } from "../db/schema/subscriptions";
 import { eq, and, isNull, isNotNull, or, lt, gt, lte, asc, inArray, sql } from "drizzle-orm";
-import { emitToWorkers, emitToUser, emitToService, getOnlineUserSet, isAdminInWorkerMode } from "./socketio";
+import { emitToWorkers, emitToUser, emitToService, getOnlineUserSet, isAdminInWorkerMode, isClientInWorkerMode } from "./socketio";
 import { createNotification, createNotifications } from "./createNotification";
 import { logger } from "./logger";
 import {
@@ -37,8 +37,9 @@ const PROMAX_PLAN_CODES = ["pro_plus_monthly", "pro_plus_annual"];
 
 async function isActiveWorkerRecipient(userId: number, databaseRole: string): Promise<boolean> {
   if (databaseRole === "worker") return true;
-  if (databaseRole !== "admin") return false;
-  return isAdminInWorkerMode(userId);
+  if (databaseRole === "admin") return isAdminInWorkerMode(userId);
+  if (databaseRole === "client") return isClientInWorkerMode(userId);
+  return false;
 }
 
 // Timers individuales por (serviceId, workerId)
@@ -868,7 +869,7 @@ async function launchCombinedActivePhase(
     })
     .from(usersTable)
     .where(and(
-      inArray(usersTable.role, ["worker", "admin"]),
+      inArray(usersTable.role, ["worker", "admin", "client"]),
       or(eq(usersTable.isAvailable, true), categoryMatch),
     ))
     .then(async (diagnosticRows) => {
@@ -921,7 +922,7 @@ async function launchCombinedActivePhase(
     .from(usersTable)
     .innerJoin(workerCategoriesTable, eq(workerCategoriesTable.workerId, usersTable.id))
     .where(and(
-      inArray(usersTable.role, ["worker", "admin"]),
+      inArray(usersTable.role, ["worker", "admin", "client"]),
       eq(usersTable.isAvailable, true),
       eq(usersTable.status, "active"),
       eq(workerCategoriesTable.categoryId, service.categoryId!),
@@ -1449,7 +1450,7 @@ export async function transitionToPassive(serviceId: number): Promise<void> {
     ))
     .leftJoin(subscriptionPlansTable, eq(userSubscriptionsTable.planCode, subscriptionPlansTable.code))
     .where(and(
-      inArray(usersTable.role, ["worker", "admin"]),
+      inArray(usersTable.role, ["worker", "admin", "client"]),
       eq(usersTable.isAvailable, true),
       eq(usersTable.status, "active"),
       eq(workerCategoriesTable.categoryId, service.categoryId!),
