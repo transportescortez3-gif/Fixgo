@@ -36,7 +36,7 @@ function readDismissedAlerts(storageKey: string | null): DismissedAlerts {
   }
 }
 
-export default function HomeAlerts() {
+export default function HomeAlerts({ suppressPaymentAlerts = false }: { suppressPaymentAlerts?: boolean }) {
   const { user } = useAuth();
   const [alerts, setAlerts] = useState<any[]>([]);
   const dismissedAlertsStorageKey = getDismissedAlertsStorageKey(user?.id);
@@ -55,14 +55,17 @@ export default function HomeAlerts() {
       .then(r => (r.ok ? r.json() : []))
       .then((list: any[]) => {
         const currentAlerts = selectCurrentHomeAlerts(
-          (list || []).filter(n => ALERT_TYPES.includes(n.type)) as HomeAlertRecord[],
+          (list || []).filter(n => (
+            ALERT_TYPES.includes(n.type) &&
+            !(suppressPaymentAlerts && n.type === "payment")
+          )) as HomeAlertRecord[],
         );
         setAlerts(currentAlerts.filter(alert => (
           alert.id > (dismissedAlerts[getHomeAlertKey(alert)] ?? -1)
         )));
       })
       .catch(() => {});
-  }, [dismissedAlerts]);
+  }, [dismissedAlerts, suppressPaymentAlerts]);
 
   useEffect(() => {
     load();

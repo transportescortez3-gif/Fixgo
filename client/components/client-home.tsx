@@ -909,6 +909,24 @@ function ProposalCard({ proposal, serviceId, onAccepted, onOpenChat, onReview, u
   );
 }
 
+type RadarAction = "relaunch" | "background" | "cancel";
+
+async function postRadarAction(serviceId: number, action: RadarAction): Promise<void> {
+  const token = localStorage.getItem("fixgo_token");
+  const response = await fetch(`/api/services/${serviceId}/${action}`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(
+      typeof result?.error === "string"
+        ? result.error
+        : "No se pudo actualizar la solicitud. Inténtalo nuevamente.",
+    );
+  }
+}
+
 export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   const { user, isClient } = useAuth();
   const [currentPath, setLocation] = useLocation();
@@ -1116,6 +1134,30 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   // Si el servicio aún no cargó en allActiveServices, usar selectedJobId directamente
   // para que la query de propuestas lea la key correcta del cache.
   const activeServiceId: number | null = selectedService?.id ?? selectedJobId ?? null;
+  const handleRadarAction = async (action: RadarAction) => {
+    if (!activeServiceId || radarActionLoading) return;
+    const serviceId = activeServiceId;
+    setRadarActionLoading(action);
+    try {
+      await postRadarAction(serviceId, action);
+      if (action === "relaunch") {
+        sessionStorage.setItem(`radar_start_${serviceId}`, String(Date.now()));
+        sessionStorage.removeItem(`radar_dismissed_${serviceId}`);
+        setRadarSeconds(0);
+        setRadarDismissed(false);
+      } else if (action === "background") {
+        sessionStorage.setItem(`radar_dismissed_${serviceId}`, "1");
+        setRadarDismissed(true);
+      } else {
+        setCancelConfirm(false);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo actualizar la solicitud.");
+    } finally {
+      void queryClient.invalidateQueries({ queryKey: getListServicesQueryKey() });
+      setRadarActionLoading(null);
+    }
+  };
   const isServiceAccepted = selectedService?.status === "accepted" || selectedService?.status === "in_progress";
 
   const handleReviewWorker = (proposal: any) => {
@@ -1415,7 +1457,7 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
 
         {/* OVERLAY SUPERIOR — siempre visible */}
         <div className="absolute top-0 left-0 right-0 z-20 p-3 space-y-2">
-          <HomeAlerts />
+          <HomeAlerts suppressPaymentAlerts={!hasAnyActiveService} />
           <GeoPermissionBanner status={geoStatus} />
 
           {isServiceAccepted &&
@@ -1801,25 +1843,7 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
                   <div className="flex gap-2 pt-0.5">
                     <button
                       disabled={!!radarActionLoading}
-                      onClick={async () => {
-                        if (!activeServiceId || radarActionLoading) return;
-                        setRadarActionLoading("relaunch");
-                        try {
-                          const token = localStorage.getItem("fixgo_token");
-                          await fetch(`/api/services/${activeServiceId}/relaunch`, {
-                            method: "POST",
-                            headers: { Authorization: `Bearer ${token}` },
-                          });
-                          // Resetear timer y limpiar el flag de dismissed
-                          sessionStorage.setItem(`radar_start_${activeServiceId}`, String(Date.now()));
-                          sessionStorage.removeItem(`radar_dismissed_${activeServiceId}`);
-                          setRadarSeconds(0);
-                          setRadarDismissed(false);
-                          queryClient.invalidateQueries({ queryKey: getListServicesQueryKey() });
-                        } catch { /* silencioso */ } finally {
-                          setRadarActionLoading(null);
-                        }
-                      }}
+                      onClick={() => void handleRadarAction("relaunch")}
                       className="flex-1 py-3 bg-muted rounded-2xl text-foreground font-semibold text-sm active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 disabled:opacity-60"
                     >
                       {radarActionLoading === "relaunch"
@@ -1829,24 +1853,7 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
                     </button>
                     <button
                       disabled={!!radarActionLoading}
-                      onClick={async () => {
-                        if (!activeServiceId || radarActionLoading) return;
-                        setRadarActionLoading("background");
-                        try {
-                          const token = localStorage.getItem("fixgo_token");
-                          await fetch(`/api/services/${activeServiceId}/background`, {
-                            method: "POST",
-                            headers: { Authorization: `Bearer ${token}` },
-                          });
-                          // Marcar el dismiss explícito del USUARIO en sessionStorage.
-                          // Solo esto debe apagar el radar, NO el status del servicio.
-                          sessionStorage.setItem(`radar_dismissed_${activeServiceId}`, "1");
-                          setRadarDismissed(true);
-                          queryClient.invalidateQueries({ queryKey: getListServicesQueryKey() });
-                        } catch { /* silencioso */ } finally {
-                          setRadarActionLoading(null);
-                        }
-                      }}
+                      onClick={() => void handleRadarAction("background")}
                       className="flex-1 py-3 bg-muted/60 rounded-2xl text-muted-foreground font-semibold text-sm active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 disabled:opacity-60"
                     >
                       {radarActionLoading === "background"
@@ -1877,19 +1884,7 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
                       </button>
                       <button
                         disabled={radarActionLoading === "cancel"}
-                        onClick={async () => {
-                          if (!activeServiceId) return;
-                          setRadarActionLoading("cancel");
-                          try {
-                            const token = localStorage.getItem("fixgo_token");
-                            await fetch(`/api/services/${activeServiceId}/cancel`, {
-                              method: "POST",
-                              headers: { Authorization: `Bearer ${token}` },
-                            });
-                            setCancelConfirm(false);
-                            queryClient.invalidateQueries({ queryKey: getListServicesQueryKey() });
-                          } catch { } finally { setRadarActionLoading(null); }
-                        }}
+                        onClick={() => void handleRadarAction("cancel")}
                         className="flex-1 py-2.5 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs font-bold active:scale-[0.97] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
                       >
                         {radarActionLoading === "cancel"
@@ -1912,22 +1907,7 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
                   <div className="space-y-2 pt-1">
                     <button
                       disabled={!!radarActionLoading}
-                      onClick={async () => {
-                        if (!activeServiceId || radarActionLoading) return;
-                        setRadarActionLoading("relaunch");
-                        try {
-                          const token = localStorage.getItem("fixgo_token");
-                          await fetch(`/api/services/${activeServiceId}/relaunch`, {
-                            method: "POST",
-                            headers: { Authorization: `Bearer ${token}` },
-                          });
-                          if (activeServiceId) sessionStorage.setItem(`radar_start_${activeServiceId}`, String(Date.now()));
-                          setRadarSeconds(0);
-                          queryClient.invalidateQueries({ queryKey: getListServicesQueryKey() });
-                        } catch { /* silencioso */ } finally {
-                          setRadarActionLoading(null);
-                        }
-                      }}
+                      onClick={() => void handleRadarAction("relaunch")}
                       className="w-full py-3.5 bg-primary text-white rounded-2xl font-bold text-sm active:scale-[0.98] transition-all flex items-center justify-center gap-2 disabled:opacity-60"
                     >
                       {radarActionLoading === "relaunch"
@@ -1937,25 +1917,7 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
                     </button>
                     <button
                       disabled={!!radarActionLoading}
-                      onClick={async () => {
-                        if (!activeServiceId || radarActionLoading) return;
-                        setRadarActionLoading("background");
-                        try {
-                          const token = localStorage.getItem("fixgo_token");
-                          await fetch(`/api/services/${activeServiceId}/background`, {
-                            method: "POST",
-                            headers: { Authorization: `Bearer ${token}` },
-                          });
-                          // Igual que en el estado activo: marcar el dismiss
-                          // explícito del usuario para que el panel se cierre.
-                          // Sin esto el botón no producía ningún cambio visible.
-                          sessionStorage.setItem(`radar_dismissed_${activeServiceId}`, "1");
-                          setRadarDismissed(true);
-                          queryClient.invalidateQueries({ queryKey: getListServicesQueryKey() });
-                        } catch { /* silencioso */ } finally {
-                          setRadarActionLoading(null);
-                        }
-                      }}
+                      onClick={() => void handleRadarAction("background")}
                       className="w-full py-3.5 bg-muted rounded-2xl text-foreground font-semibold text-sm active:scale-[0.98] transition-all flex items-center justify-center gap-2 disabled:opacity-60"
                     >
                       {radarActionLoading === "background"
@@ -1988,19 +1950,7 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
                         </button>
                         <button
                           disabled={radarActionLoading === "cancel"}
-                          onClick={async () => {
-                            if (!activeServiceId) return;
-                            setRadarActionLoading("cancel");
-                            try {
-                              const token = localStorage.getItem("fixgo_token");
-                              await fetch(`/api/services/${activeServiceId}/cancel`, {
-                                method: "POST",
-                                headers: { Authorization: `Bearer ${token}` },
-                              });
-                              setCancelConfirm(false);
-                              queryClient.invalidateQueries({ queryKey: getListServicesQueryKey() });
-                            } catch { } finally { setRadarActionLoading(null); }
-                          }}
+                          onClick={() => void handleRadarAction("cancel")}
                           className="flex-1 py-2.5 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs font-bold active:scale-[0.97] transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
                         >
                           {radarActionLoading === "cancel"

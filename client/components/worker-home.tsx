@@ -347,6 +347,10 @@ export default function WorkerHome({ visible }: { visible?: boolean } = {}) {
     // Motor: servicio disponible en barra (phase 3), tomado o expirado
     // service:active_alert → alerta inmediata para workers Pro Max (fase 1a)
     const socket = getSocket();
+    // Al recuperar la conexión, rehidratar las listas por HTTP además del
+    // replay Socket.IO: así no se pierde una solicitud si el evento se adelantó
+    // al montaje o la pestaña estaba suspendida.
+    socket.on("connect", refreshServices);
     socket.on("new_service_request", onNewServiceRequest);
     socket.on("service:available", refreshServices);
     socket.on("service:taken", refreshServices);
@@ -354,6 +358,7 @@ export default function WorkerHome({ visible }: { visible?: boolean } = {}) {
     socket.on("service:active_alert", refreshServices);
 
     return () => {
+      socket.off("connect", refreshServices);
       socket.off("new_service_request", onNewServiceRequest);
       socket.off("service:available", refreshServices);
       socket.off("service:taken", refreshServices);

@@ -54,35 +54,42 @@ function KycCard({ submission, onAction }: { submission: any; onAction: () => vo
   return (
     <Card className="border-border/50">
       <CardContent className="pt-4 pb-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
-              <User className="w-5 h-5 text-primary" />
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={`kyc-details-${submission.id}`}
+          onClick={() => setExpanded(value => !value)}
+          className="w-full rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <div className="flex min-h-12 items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center shrink-0">
+                <User className="w-5 h-5 text-primary" />
+              </div>
+              <div className="min-w-0">
+                <p className="font-semibold text-sm truncate">{submission.userName}</p>
+                <p className="text-xs text-muted-foreground truncate">{submission.userEmail}</p>
+              </div>
             </div>
-            <div>
-              <p className="font-semibold text-sm">{submission.userName}</p>
-              <p className="text-xs text-muted-foreground">{submission.userEmail}</p>
+            <div className="flex items-center gap-2 shrink-0">
+              <Badge variant="outline" className={`text-xs ${config.color}`}>
+                <StatusIcon className="w-3 h-3 mr-1" />
+                {config.label}
+              </Badge>
+              {expanded ? <ChevronUp className="w-5 h-5" aria-hidden="true" /> : <ChevronDown className="w-5 h-5" aria-hidden="true" />}
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant="outline" className={`text-xs ${config.color}`}>
-              <StatusIcon className="w-3 h-3 mr-1" />
-              {config.label}
-            </Badge>
-            <button onClick={() => setExpanded(!expanded)} className="p-1 hover:bg-muted/30 rounded">
-              {expanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            </button>
+
+          <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
+            <span>Documento: <strong className="text-foreground">{submission.documentType === "licencia" ? "Licencia de Conducir" : submission.documentType === "pasaporte" ? "Pasaporte" : "Cédula de Identidad"}</strong></span>
+            <span>RUT: <strong className="text-foreground">{submission.rut}</strong></span>
+            <span>Nombre: <strong className="text-foreground">{submission.fullName}</strong></span>
+            {submission.userPhone && <span>Tel: {submission.userPhone}</span>}
           </div>
-        </div>
+        </button>
 
-        <div className="mt-2 flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
-          <span>Documento: <strong className="text-foreground">{submission.documentType === "licencia" ? "Licencia de Conducir" : submission.documentType === "pasaporte" ? "Pasaporte" : "Cédula de Identidad"}</strong></span>
-          <span>RUT: <strong className="text-foreground">{submission.rut}</strong></span>
-          <span>Nombre: <strong className="text-foreground">{submission.fullName}</strong></span>
-          {submission.userPhone && <span>Tel: {submission.userPhone}</span>}
-        </div>
-
-        {expanded && (
+        <div id={`kyc-details-${submission.id}`} hidden={!expanded}>
+          {expanded && (
           <div className="mt-4 space-y-4 animate-in fade-in slide-in-from-top-2">
             <div className={`grid gap-3 ${submission.documentType === "pasaporte" ? "grid-cols-2" : "grid-cols-3"}`}>
               <div className="space-y-1.5">
@@ -181,7 +188,8 @@ function KycCard({ submission, onAction }: { submission: any; onAction: () => vo
               </div>
             )}
           </div>
-        )}
+          )}
+        </div>
       </CardContent>
     </Card>
   );
