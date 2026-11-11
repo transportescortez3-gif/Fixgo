@@ -32,7 +32,8 @@
     "mobile:android": "npm run mobile:prepare && node scripts/mobile-check.mjs android && cd android && ./gradlew assembleDebug",
     "mobile:android:release": "npm run mobile:prepare && node scripts/mobile-check.mjs android --release && cd android && ./gradlew bundleRelease && cd .. && node scripts/package-android-release.mjs",
     "mobile:ios": "npm run mobile:prepare && node scripts/mobile-check.mjs ios && xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' build",
-    "mobile:sync": "npm run mobile:prepare"
+    "mobile:sync": "npm run mobile:prepare",
+    "test:cancelled-service-cache": "tsx client/lib/service-list-cache.test.ts"
   },
   "dependencies": {
     "@capacitor-community/keep-awake": "^8.0.1",

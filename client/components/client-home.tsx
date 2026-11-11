@@ -5,6 +5,7 @@ import { getSocket } from "@/hooks/use-socket";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { useGlobalSocket } from "@/hooks/use-global-socket";
 import { useSocket } from "@/hooks/use-socket";
+import { removeCancelledServiceFromHomeLists } from "@/lib/service-list-cache";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -948,6 +949,7 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   const [radarDismissed, setRadarDismissed] = useState(false);
   const [radarActionLoading, setRadarActionLoading] = useState<"relaunch" | "background" | "cancel" | null>(null);
   const [cancelConfirm, setCancelConfirm] = useState(false);
+  const [allProposalsOpen, setAllProposalsOpen] = useState(false);
   const [budgetAdjustOpen, setBudgetAdjustOpen] = useState(false);
   const [budgetInput, setBudgetInput] = useState("");
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
@@ -992,12 +994,12 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   // ── Recibir ubicaciones de workers en vivo y patchear la cache ─────────
   // Cada vez que un worker disponible emite su posición, actualizamos el
   // marker en el mapa sin esperar al siguiente refetch del polling.
-  const queryClientRT = useQueryClient();
+  const queryClient = useQueryClient();
   useEffect(() => {
     if (!user) return;
     const socket = getSocket();
     const onMoved = (data: { workerId: number; lat: number; lng: number }) => {
-      queryClientRT.setQueriesData(
+      queryClient.setQueriesData(
         { queryKey: ["/api/workers/nearby"] },
         (old: any) => {
           if (!old) return old;
@@ -1017,7 +1019,7 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
     };
     socket.on("worker:moved", onMoved);
     return () => { socket.off("worker:moved", onMoved); };
-  }, [user, queryClientRT]);
+  }, [user, queryClient]);
 
   // ── Viewers en tiempo real por servicio ─────────────────────────────────
   const [serviceViewersCount, setServiceViewersCount] = useState<Record<number, number>>({});
@@ -1134,6 +1136,46 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   // Si el servicio aún no cargó en allActiveServices, usar selectedJobId directamente
   // para que la query de propuestas lea la key correcta del cache.
   const activeServiceId: number | null = selectedService?.id ?? selectedJobId ?? null;
+  const clearCancelledServiceState = (serviceId: number) => {
+    const affectsCurrentService = selectedJobId === serviceId || activeServiceId === serviceId;
+    sessionStorage.removeItem(`radar_start_${serviceId}`);
+    sessionStorage.removeItem(`radar_dismissed_${serviceId}`);
+    setSocketProposals(current => current?.serviceId === serviceId ? null : current);
+    setServiceViewersCount(current => {
+      if (!(serviceId in current)) return current;
+      const next = { ...current };
+      delete next[serviceId];
+      return next;
+    });
+    setServiceViewerIds(current => {
+      if (!(serviceId in current)) return current;
+      const next = { ...current };
+      delete next[serviceId];
+      return next;
+    });
+
+    if (!affectsCurrentService) return;
+    setSelectedJobId(current => current === serviceId ? null : current);
+    setProposalsPanelOpen(false);
+    setAllProposalsOpen(false);
+    setReviewedProposal(null);
+    setRadarSeconds(0);
+    setRadarDismissed(false);
+    setCancelConfirm(false);
+    setBudgetAdjustOpen(false);
+    setBudgetInput("");
+  };
+
+  const handleServiceCancelled = (serviceId: number) => {
+    clearCancelledServiceState(serviceId);
+    queryClient.setQueryData(getGetServiceProposalsQueryKey(serviceId), []);
+    void removeCancelledServiceFromHomeLists(queryClient, serviceId)
+      .catch(error => console.error("[ClientHome] No se pudo limpiar la caché de la solicitud cancelada:", error))
+      .finally(() => {
+        void queryClient.invalidateQueries({ queryKey: getListServicesQueryKey() });
+      });
+  };
+
   const handleRadarAction = async (action: RadarAction) => {
     if (!activeServiceId || radarActionLoading) return;
     const serviceId = activeServiceId;
@@ -1149,7 +1191,7 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
         sessionStorage.setItem(`radar_dismissed_${serviceId}`, "1");
         setRadarDismissed(true);
       } else {
-        setCancelConfirm(false);
+        handleServiceCancelled(serviceId);
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "No se pudo actualizar la solicitud.");
@@ -1196,7 +1238,6 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
     { query: { enabled: !!activeServiceId, refetchInterval: 10000 } as any }
   );
 
-  const queryClient = useQueryClient();
   const handleProposalUpdated = useCallback(async (data: { serviceId: number; action: string }) => {
     queryClient.invalidateQueries({ queryKey: getListServicesQueryKey() });
     queryClient.invalidateQueries({ queryKey: getGetServiceProposalsQueryKey(data.serviceId) });
@@ -1230,6 +1271,8 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
       // invalida al completar, destruye el PostServiceModal en mis-trabajos.
       if (data.status === "in_progress" || data.status === "accepted") {
         queryClient.invalidateQueries({ queryKey: getListServicesQueryKey() });
+      } else if (data.status === "cancelled" && Number.isSafeInteger(data.serviceId)) {
+        handleServiceCancelled(data.serviceId);
       }
     },
   });
@@ -1250,7 +1293,6 @@ export default function ClientHome({ visible }: { visible?: boolean } = {}) {
   const visibleProposals = allProposals.filter((p: any) =>
     p.status === "pending" || p.status === "worker_accepted" || p.status === "countered"
   );
-  const [allProposalsOpen, setAllProposalsOpen] = useState(false);
   const PROPOSALS_PREVIEW_COUNT = 3;
   const previewProposals = visibleProposals.slice(0, PROPOSALS_PREVIEW_COUNT);
   const hiddenProposalsCount = Math.max(0, visibleProposals.length - PROPOSALS_PREVIEW_COUNT);
