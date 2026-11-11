@@ -472,6 +472,9 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
   const initializedRef = useRef(false);
   const mountedRef = useRef(true);
   const readyRef = useRef(false);
+  const lastCameraRef = useRef({ center: { ...center }, zoom });
+  const mapInitPromiseRef = useRef<Promise<void>>(Promise.resolve());
+  const mapDestroyPromiseRef = useRef<Promise<void>>(Promise.resolve());
 
   // ID del mapa nativo (asignado tras CapMap.create()). Necesario para
   // llamar directamente al bridge del plugin al ocultar/mostrar.
@@ -481,6 +484,20 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
   // visibilidad pueda añadirlos/quitarlos sin depender del closure del
   // efecto de montaje.
   const taggedRef = useRef<HTMLElement[]>([]);
+
+  const queueMapDestroy = (map: any) => {
+    const destroyPromise = mapDestroyPromiseRef.current
+      .catch(() => {})
+      .then(async () => {
+        try {
+          await map.destroy();
+        } catch {
+          // El mapa puede haber sido destruido por una inicialización cancelada.
+        }
+      });
+    mapDestroyPromiseRef.current = destroyPromise;
+    return destroyPromise;
+  };
 
   const onMarkerClickRef = useRef(onMarkerClick);
   const onMapClickRef = useRef(onMapClick);
@@ -538,11 +555,10 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
     };
   }, []);
 
-  // Efecto de visibilidad: cuando el padre pasa visible=false (el usuario
-  // navego a otra pantalla), ocultamos el MapView nativo llamando al bridge
-  // directamente con mapBounds {0,0,0,0} — equivale a un hide() sin destruir.
-  // Tambien quitamos las clases de transparencia para que las demas paginas
-  // tengan fondo opaco. Cuando visible vuelve a true, restauramos todo.
+  // Efecto de visibilidad: al salir de Inicio destruimos el MapView nativo.
+  // Reducir sus bounds a cero deja viva la SurfaceView y puede conservar una
+  // línea del borde del mapa sobre la pantalla siguiente. Al volver, el mapa
+  // se crea de nuevo con la última cámara y los marcadores/círculos actuales.
   //
   // Esto requiere que el componente permanezca MONTADO mientras el usuario
   // navega (ver App.tsx: WorkerHome/ClientHome se renderizan fuera del Switch).
@@ -559,11 +575,18 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
       document.documentElement.classList.remove("native-map-active");
       document.body.classList.remove("native-map-active");
       for (const el of taggedRef.current) el.removeAttribute("data-native-map-ancestor");
-      // 2. Colapsar el MapView nativo a tamaño 0 (equivale a hide()).
-      if (mapId && plugin) {
-        plugin.onResize({ id: mapId, mapBounds: { x: 0, y: 0, width: 0, height: 0 } })
-          .catch(() => {});
+      // 2. Retirar la SurfaceView nativa por completo para que no deje restos
+      // sobre el contenido de la pantalla siguiente.
+      const map = mapRef.current;
+      if (map) {
+        mapRef.current = null;
+        mapIdRef.current = null;
+        readyRef.current = false;
+        markerStateRef.current.clear();
+        circleStateRef.current.clear();
+        void queueMapDestroy(map);
       }
+      initializedRef.current = false;
     } else {
       // --- MOSTRAR ---
       // 1. Restaurar cadena de transparencias.
@@ -630,6 +653,10 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
     let cancelled = false;
 
     async function init() {
+      // Serializar una vuelta rápida a Inicio con la destrucción anterior.
+      await mapInitPromiseRef.current.catch(() => {});
+      await mapDestroyPromiseRef.current.catch(() => {});
+      if (cancelled) return;
       if (!prewarm && visible === false) return;
       if (!containerRef.current || initializedRef.current) return;
       initializedRef.current = true;
@@ -670,9 +697,10 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
         //   - `mapType`: el Kotlin lee la key `mapTypeId` (no `mapType`).
         //     Antes pasabamos la key incorrecta y el SDK la ignoraba.
         const liteMode = isLiteModeEnabled();
+        const initialCamera = lastCameraRef.current;
         const nativeConfig: any = {
-          center,
-          zoom,
+          center: initialCamera.center,
+          zoom: initialCamera.zoom,
           androidLiteMode: liteMode,
           // 28-abr-2026: forzar variante OSCURA del estilo del Map ID a nivel
           // SDK (independiente del modo del SO o del tema de la app). Lo lee
@@ -735,11 +763,17 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
           // sube significa que el SDK MapView esta vivo y respondiendo
           // (independiente de si los tiles se ven o no).
           setCameraIdleCount((c) => c + 1);
+          lastCameraRef.current = {
+            center: { lat: evt.latitude, lng: evt.longitude },
+            zoom: evt.zoom,
+          };
           onCameraIdleRef.current?.({ lat: evt.latitude, lng: evt.longitude, zoom: evt.zoom });
         });
 
+        if (cancelled) return;
         await syncMarkers(markersRef.current);
         await syncCircles(circlesRef.current);
+        if (cancelled) return;
 
         // ============================================================
         // FIX GESTOS (29-abr-2026):
@@ -805,8 +839,11 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
         // contador y confirma que el SDK esta vivo.
         try {
           await (map as any).setCamera({
-            coordinate: { lat: center.lat, lng: center.lng },
-            zoom,
+            coordinate: {
+              lat: initialCamera.center.lat,
+              lng: initialCamera.center.lng,
+            },
+            zoom: initialCamera.zoom,
             animate: false,
           });
         } catch { /* no-op si el SDK no lo soporta */ }
@@ -818,15 +855,16 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
       }
     }
 
-    init();
+    const initPromise = init();
+    mapInitPromiseRef.current = initPromise.catch(() => {});
 
     return () => {
       cancelled = true;
       if (!mapRef.current) initializedRef.current = false;
     };
     // Reintentar cuando la pantalla de inicio oculta se vuelve visible.
-    // No se destruye el mapa al cambiar de pantalla: el efecto separado de
-    // visibilidad sigue reduciendo/restaurando sus bounds nativos.
+    // El efecto de visibilidad destruye el mapa al ocultarlo; al volver aquí,
+    // se crea otra instancia con la cámara y las capas actuales.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, prewarm]);
 
@@ -838,9 +876,10 @@ const NativeImpl = forwardRef<NativeMapHandle, NativeMapProps>(function NativeIm
       const m = mapRef.current;
       if (m) {
         mapRef.current = null;
+        mapIdRef.current = null;
         markerStateRef.current.clear();
         circleStateRef.current.clear();
-        m.destroy().catch(() => {});
+        void queueMapDestroy(m);
       }
       initializedRef.current = false;
     };
