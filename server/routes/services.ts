@@ -340,6 +340,11 @@ router.post("/services", authenticate, async (req: AuthRequest, res): Promise<vo
   }
 
   const full = await getServiceWithRelations(service.id);
+  emitToUser(service.clientId, "service_updated", {
+    serviceId: service.id,
+    status: full?.status ?? service.status,
+    created: true,
+  });
   res.status(201).json(full);
 });
 
