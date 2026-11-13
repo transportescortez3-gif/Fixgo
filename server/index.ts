@@ -31,6 +31,11 @@ async function start() {
   const httpServer = http.createServer(app);
   await initSocketIO(httpServer);
 
+  app.get(["/descargar-android", "/descargar-android/"], (_req, res) => {
+    res.setHeader("Cache-Control", "public, max-age=600");
+    res.sendFile(path.join(root, "public", "descargar-android", "index.html"));
+  });
+
   if (isDev) {
     const vite = await createViteServer({
       root,

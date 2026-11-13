@@ -780,6 +780,14 @@ export default function Home() {
                       <Link href="/register">{heroCtaSecondary}</Link>
                     </Button>
                   </motion.div>
+                  <motion.div whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }}>
+                    <Button asChild variant="outline" size="lg" className="h-14 px-6 text-base rounded-xl border-primary/25 bg-background/60 hover:bg-primary/10 hover:border-primary/50 font-semibold transition-all duration-200">
+                      <a href="/descargar-android/" aria-label="Descargar Fixgo para Android">
+                        Descargar para Android
+                        <ArrowRight className="w-4 h-4 ml-2" />
+                      </a>
+                    </Button>
+                  </motion.div>
                 </motion.div>
 
                 <motion.div
@@ -1168,6 +1176,8 @@ export default function Home() {
             </motion.div>
             <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
               <span>© 2026 Fixgo</span>
+              <span>•</span>
+              <a href="/descargar-android/" className="hover:text-foreground transition-colors">Descargar para Android</a>
               <span>•</span>
               <Link href="/planes" className="hover:text-foreground transition-colors cursor-pointer">Planes</Link>
               <span>•</span>
