@@ -33,6 +33,15 @@ const serviceSchema = z.object({
 type ServiceForm = z.infer<typeof serviceSchema>;
 
 export default function NewService() {
+  useEffect(() => () => {
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement) activeElement.blur();
+    const removePopups = () => {
+      document.querySelectorAll<HTMLElement>(".pac-container").forEach((popup) => popup.remove());
+    };
+    removePopups();
+    window.setTimeout(removePopups, 0);
+  }, []);
   const [, setLocation] = useLocation();
   const search = useSearch();
   const createServiceMutation = useCreateService();
