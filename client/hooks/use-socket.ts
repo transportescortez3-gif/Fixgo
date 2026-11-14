@@ -12,6 +12,46 @@ export type SocketAuthStatus = "checking" | "authenticated" | "unauthenticated" 
 
 let socketAuthStatus: SocketAuthStatus = "checking";
 const socketAuthStatusListeners = new Set<(status: SocketAuthStatus) => void>();
+let socketInterruptionStartedAt: number | null = null;
+let socketInterruptionReason: string | null = null;
+
+const SAFE_SOCKET_DISCONNECT_REASONS = new Set([
+  "io server disconnect",
+  "io client disconnect",
+  "ping timeout",
+  "transport close",
+  "transport error",
+  "parse error",
+]);
+
+function classifySocketDisconnectReason(reason: string): string {
+  return SAFE_SOCKET_DISCONNECT_REASONS.has(reason) ? reason : "other";
+}
+
+function classifySocketConnectError(error: unknown): string {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (message.includes("timeout") || message.includes("timed out")) return "timeout";
+  if (/websocket|xhr poll|transport/.test(message)) return "transport";
+  if (/auth|token|unauthorized/.test(message)) return "authentication";
+  return "connection_error";
+}
+
+function beginSocketInterruption(reason: string): void {
+  if (socketInterruptionStartedAt !== null) return;
+  socketInterruptionStartedAt = Date.now();
+  socketInterruptionReason = reason;
+  console.debug("[Socket] reconnection started", { reason });
+}
+
+function finishSocketInterruption(): void {
+  if (socketInterruptionStartedAt === null) return;
+  console.debug("[Socket] transport reconnected", {
+    reason: socketInterruptionReason ?? "unknown",
+    durationMs: Date.now() - socketInterruptionStartedAt,
+  });
+  socketInterruptionStartedAt = null;
+  socketInterruptionReason = null;
+}
 
 function updateSocketAuthStatus(status: SocketAuthStatus): void {
   socketAuthStatus = status;
@@ -70,13 +110,20 @@ export function getSocket(): Socket {
     // On every (re)connect: re-join all service/thread rooms still in use.
     // User rooms are auto-joined by the server (socket.join(`user_${uid}`) on connection).
     sharedSocket.on("connect", () => {
+      finishSocketInterruption();
       updateSocketAuthStatus("checking");
       serviceRoomRefs.forEach((entry) => {
         sharedSocket!.emit("join_service", buildJoinPayload(entry));
       });
     });
-    sharedSocket.on("disconnect", () => updateSocketAuthStatus("disconnected"));
-    sharedSocket.on("connect_error", () => updateSocketAuthStatus("disconnected"));
+    sharedSocket.on("disconnect", (reason: string) => {
+      beginSocketInterruption(classifySocketDisconnectReason(reason));
+      updateSocketAuthStatus("disconnected");
+    });
+    sharedSocket.on("connect_error", (error: Error) => {
+      beginSocketInterruption(classifySocketConnectError(error));
+      updateSocketAuthStatus("disconnected");
+    });
     sharedSocket.on(
       "socket:auth_status",
       (data: { authenticated?: boolean }) =>

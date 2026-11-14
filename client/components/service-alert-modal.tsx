@@ -16,6 +16,7 @@ import {
   type QueuedServiceAlert,
   type ServiceAlertPayload,
 } from "@/lib/service-alert-state";
+import { createSocketReconnectNoticeController } from "@/lib/socket-reconnect-notice";
 
 async function patchAlertSession(serviceId: number, action: "skip" | "view") {
   const token = localStorage.getItem("fixgo_token") ?? "";
@@ -43,6 +44,7 @@ export default function ServiceAlertModal() {
   // Inicializar desde el módulo para que el remount recupere la cola existente
   const [queue, setQueueState] = useState<QueuedServiceAlert[]>(_moduleQueue);
   const [socketStatus, setSocketStatus] = useState<SocketAuthStatus>(getSocketAuthStatus());
+  const [showReconnectNotice, setShowReconnectNotice] = useState(false);
   const [secondsById, setSecondsById] = useState<Record<number, number>>(() =>
     Object.fromEntries(_moduleQueue.map((alert) => [
       alert.serviceId,
@@ -129,6 +131,7 @@ export default function ServiceAlertModal() {
     if (!isWorker) return;
     const socket = getSocket();
     if (!socket) return;
+    const reconnectNotice = createSocketReconnectNoticeController(setShowReconnectNotice);
 
     const handleActiveAlert = (payload: ServiceAlertPayload) => {
       if (!payload || !Number.isInteger(payload.serviceId) || payload.serviceId <= 0) return;
@@ -146,6 +149,7 @@ export default function ServiceAlertModal() {
 
     const requestReplay = (status: SocketAuthStatus) => {
       setSocketStatus(status);
+      reconnectNotice.update(status);
       if (status === "authenticated" && socket.connected) {
         socket.emit("service:replay_active_alerts");
       }
@@ -164,6 +168,8 @@ export default function ServiceAlertModal() {
       socket.off("service:alert_expired", handleExpired);
       socket.off("service:taken", handleTaken);
       unsubscribeAuthStatus();
+      reconnectNotice.dispose();
+      setShowReconnectNotice(false);
     };
   }, [isWorker, removeFromQueue]);
 
@@ -214,9 +220,9 @@ export default function ServiceAlertModal() {
 
   return (
     <AnimatePresence>
-      {(socketStatus === "unauthenticated" || socketStatus === "disconnected") && (
+      {socketStatus === "unauthenticated" && (
         <motion.div
-          key="socket-alert-status"
+          key="socket-auth-status"
           role="status"
           aria-live="polite"
           className="fixed z-[10000] rounded-xl border border-amber-500/30 bg-slate-950/95 px-4 py-3 text-sm text-white shadow-xl"
@@ -225,9 +231,21 @@ export default function ServiceAlertModal() {
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 20, opacity: 0 }}
         >
-          {socketStatus === "unauthenticated"
-            ? "La conexión no está autenticada. Inicia sesión nuevamente para recibir trabajos."
-            : "Conexión interrumpida. Intentando reconectar para recibir trabajos…"}
+          La conexión no está autenticada. Inicia sesión nuevamente para recibir trabajos.
+        </motion.div>
+      )}
+      {showReconnectNotice && socketStatus !== "unauthenticated" && (
+        <motion.div
+          key="socket-reconnect-status"
+          role="status"
+          aria-live="polite"
+          className="fixed z-[10000] rounded-xl border border-amber-500/30 bg-slate-950/95 px-4 py-3 text-sm text-white shadow-xl"
+          style={{ bottom: 16, left: 12, right: 12, maxWidth: 420, margin: "0 auto" }}
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          exit={{ y: 20, opacity: 0 }}
+        >
+          Reconectando avisos de trabajos…
         </motion.div>
       )}
       {hasModalAlerts && (
