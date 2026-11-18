@@ -1,0 +1,21 @@
+.places-address-widget {
+  display: block;
+  width: 100%;
+  min-height: 2.25rem;
+  border: 1px solid hsl(var(--input));
+  border-radius: var(--radius);
+  background-color: transparent;
+  color: hsl(var(--foreground));
+  font: inherit;
+  color-scheme: dark;
+}
+
+.places-address-widget::part(input) {
+  font: inherit;
+  color: hsl(var(--foreground));
+}
+
+.places-address-widget::part(prediction-list) {
+  background-color: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+}

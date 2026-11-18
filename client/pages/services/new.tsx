@@ -571,14 +571,12 @@ export default function NewService() {
                     ))}
                   </div>
                   <div className="relative">
-                    <MapPin className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none z-10" />
                     <AddressAutocomplete
                       id="address"
                       value={watch("address") || ""}
                       onChange={(val) => setValue("address", val, { shouldValidate: true })}
                       onLatLng={(lat, lng) => setServiceCoords({ lat, lng })}
                       placeholder="Calle, número..."
-                      className="pl-9"
                     />
                   </div>
                   {propertyType === "departamento" && (
